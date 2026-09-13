@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { resetContentSourceForTests } from '@/lib/content-source'
+import { apiReferenceConfig } from '@/config/api-reference'
 import { generateStaticParams as rootParams } from '../../app/(docs)/[[...slug]]/page'
 import { generateStaticParams as localizedApiParams } from '../../app/(docs)/[locale]/api/[[...slug]]/page'
 import { generateStaticParams as apiParams } from '../../app/(docs)/api/[[...slug]]/page'
@@ -26,6 +27,10 @@ const routes = [
   { name: '[[...slug]]', generateStaticParams: rootParams },
   { name: 'api/[[...slug]]', generateStaticParams: apiParams },
 ]
+
+const prerenderRoutes = apiReferenceConfig.specs.length > 0
+  ? routes
+  : routes.filter((route) => route.name === '[[...slug]]')
 
 beforeEach(() => {
   delete process.env.THALLY_CONTENT_SOURCE
@@ -71,7 +76,7 @@ describe('doc route generateStaticParams', () => {
 
   // Self-hosted builds must still enumerate real content paths rather than
   // taking the managed shell probe unconditionally.
-  it.each(routes)('$name still prerenders under the default filesystem source', async ({ generateStaticParams }) => {
+  it.each(prerenderRoutes)('$name still prerenders under the default filesystem source', async ({ generateStaticParams }) => {
     const params = await generateStaticParams()
     expect(params.some((entry) => entry.slug.length > 0)).toBe(true)
   })

@@ -71,7 +71,7 @@ Auth decorator failures (`missing_token`, `token_expired`, `invalid_token`, `rec
 | `prepare_failed` | 500 | Copy/materialize onto the volume failed. Reservation cancelled. Includes `message`. |
 | `method_not_allowed` | 405 | Non-POST `/predict`. |
 | `invalid_generation_id` | 400 | Crop or favorites path/body is not a UUID. |
-| `invalid_ratio` | 400 | Unknown crop key. `allowed` lists the four keys. |
+| `invalid_ratio` | 400 | Unknown crop key. `allowed` lists the five keys. |
 | `missing_output` | 404 | Generation row has no `output_image_path`. |
 | `output_dir_missing` | 404 | Output directory gone from the volume. |
 | `output_image_not_found` | 404 | No JPEG to crop. |

@@ -1,6 +1,6 @@
 ---
 title: "Crop an export"
-description: "Smart-crop a finished generation to 1:1, 4:5, 9:16, or 16:9."
+description: "Smart-crop a finished generation to 1:1, 4:5, 2:3, 9:16, or 16:9."
 ---
 
 Smart crop writes a new file next to the original output. It does not replace the uncropped JPEG. The window is centered on the stored person box when one exists; otherwise it uses the image center. There is no model at crop time.
@@ -11,13 +11,14 @@ Allowed `ratio_key` values:
 |-------------|-----------------|
 | `square_1_1` | 1:1 |
 | `portrait_4_5` | 4:5 |
+| `portrait_2_3` | 2:3 |
 | `story_9_16` | 9:16 |
 | `wallpaper_16_9` | 16:9 |
 
 ## In the studio
 
 1. Finish a generation so the result overlay is open.
-2. Click **1:1**, **4:5**, **9:16**, or **16:9**.
+2. Click **1:1**, **4:5**, **2:3**, **9:16**, or **16:9**.
 3. **Original** shows the uncropped file again.
 
 The overlay also has **Subject blend** (person layer mix) and, when LUTs exist, a color-grade control. Those are separate from crop.
@@ -52,7 +53,7 @@ Expected response:
 
 | You see | Cause |
 |---------|--------|
-| `invalid_ratio` (400) | `ratio_key` is not one of the four keys. Body includes `allowed`. |
+| `invalid_ratio` (400) | `ratio_key` is not one of the five keys. Body includes `allowed`. |
 | `invalid_generation_id` (400) | Path segment is not a UUID. |
 | `not_found` (404) | Generation is missing or owned by someone else. |
 | `missing_output` / `output_dir_missing` / `output_image_not_found` (404) | Files are gone from the volume. Re-run `/predict`. |

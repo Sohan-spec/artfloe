@@ -57,7 +57,7 @@ If no person is found, the result is fully stylized and the blend UI stays hidde
 
 Optional 3D LUT grading lives in `utils/color_grading.py`. Catalog entries with a resolvable `.cube` expose `has_lut` on `GET /styles`. The GPU may write `*_grade.jpg` sidecars; the studio toggles them client-side.
 
-Smart crop is a separate `POST /crop/<generation_id>/<ratio_key>` after the generation exists. Keys: `square_1_1`, `portrait_4_5`, `story_9_16`, `wallpaper_16_9`. It uses the stored subject box when present. See [Crop an export](/guides/crop-an-export).
+Smart crop is a separate `POST /crop/<generation_id>/<ratio_key>` after the generation exists. Keys: `square_1_1`, `portrait_4_5`, `portrait_2_3`, `story_9_16`, `wallpaper_16_9`. It uses the stored subject box when present. See [Crop an export](/guides/crop-an-export).
 
 ## What this is not
 

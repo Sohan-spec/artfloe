@@ -160,13 +160,13 @@ const brandPresets: Record<BrandPresetKey, BrandConfig> = {
 const brandPreset: BrandPresetKey = 'primary'
 
 export const siteConfig: SiteConfig = {
-  name: 'My Docs',
+  name: 'ArtFloe',
   description:
-    'Documentation migrated from github.com',
-  repoUrl: '',
+    'Technical documentation for ArtFloe — neural style transfer with person preservation.',
+  repoUrl: 'https://github.com/Sohan-spec/artfloe',
   links: [
-    { label: 'Get started', href: '/quickstart' },
-    { label: 'Changelog', href: '/changelog' },
+    { label: 'Get started', href: '/artfloe_build_document' },
+    { label: 'App repo', href: 'https://github.com/Sohan-spec/ArtFlow-CloudFlare' },
   ],
   brand: brandPresets[brandPreset],
   brandPreset,

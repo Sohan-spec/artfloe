@@ -1,0 +1,295 @@
+---
+title: "System Architecture"
+description: ""
+---
+
+# ARCHITECTURE & TECHNICAL SPECIFICATION: ARTFLOE
+
+**Document Version:** 1.0.0  
+**Target Systems:** Modal Cloud Platform, Flask WSGI, Cloudflare Edge Infrastructure  
+**Core Domain:** Neural Style Transfer (NST) with Human-Preserving Background Segmentation  
+
+---
+
+## 1. EXECUTIVE & TECHNICAL OVERVIEW
+
+**ArtFloe** is a distributed, GPU-accelerated web application designed to perform **Neural Style Transfer (NST)** on arbitrary images while performing **person-preserving background isolation**. 
+
+Unlike naive NST implementations that apply artistic stylization across an entire image canvas indiscriminately, ArtFloe integrates a dual-stage vision pipeline:
+1. **Object Detection Stage:** Identifies human bounding boxes using Faster R-CNN.
+2. **Saliency Segmentation Stage:** Computes a high-precision foreground alpha mask using `briaai/RMBG-2.0` (BiRefNet).
+3. **Constrained Compositing Stage:** Restricts background stylization to non-human pixels and applies smooth Gaussian alpha feathering around subject edges.
+
+The application is architected around a **decoupled hybrid cloud paradigm**:
+- **Front-End & Proxy Tier:** Cloudflare Workers acting as a reverse proxy over custom domain routing (`artfloe.fun`).
+- **Control Tier:** A lightweight Flask WSGI web application hosted on Modal Serverless Containers.
+- **Compute Tier:** Dedicated, on-demand **Nvidia A10G GPU** functions orchestrated via Modal's asynchronous gRPC runtime.
+- **Storage Tier:** A shared, persistent Modal Volume (`nst-data-vol`) mounting POSIX-compatible storage across web and GPU workers.
+
+---
+
+## 2. HIGH-LEVEL SYSTEM ARCHITECTURE
+
+```
+                                    ┌──────────────────────────────────────────────────────────┐
+                                    │                Modal Persistent Volume                   │
+                                    │                   ("nst-data-vol")                       │
+                                    │  /data/content-images     /data/style-images             │
+                                    │  /data/temp-styles        /data/output-images            │
+                                    └───────────────┬───────────────────────────┬──────────────┘
+                                                    │                           │
+                                                    │ (Read/Write Mount)        │ (Read/Write Mount)
+                                                    ▼                           ▼
+┌───────────────────────┐          ┌───────────────────────────┐       ┌───────────────────────────┐
+│  Client / Edge Tier   │          │     Flask Web Worker      │       │     Modal GPU Worker      │
+│                       │          │   (Modal WSGI Server)     │       │     (Nvidia A10G GPU)     │
+│  - Browser UI         │          │                           │       │                           │
+│  - Cloudflare Proxy   │ ───────► │ - File Upload Endpoints   │ ────► │ - Faster R-CNN (ResNet50)│
+│  - SSE Listener       │ ◄─────── │ - SSE Event Streamer      │ ◄──── │ - RMBG-2.0 (BiRefNet)    │
+│  - Custom Domain      │  (SSE)   │ - Volume Sync Controller  │(gRPC) │ - PyTorch VGG19 Neural Net│
+│    (artfloe.fun)      │          │ - Invokes GPU Remote Gen  │       │ - CUDA L-BFGS Optimizer   │
+└───────────────────────┘          └───────────────────────────┘       └───────────────────────────┘
+```
+
+---
+
+## 3. COMPONENT BREAKDOWN & WORKFLOWS
+
+### 3.1 HTTP Request Lifecycle & IPC Orchestration
+
+```
+[Client] ──► POST /upload_content ──► [Flask] ──► Save to /data/content-images ──► Volume.commit()
+[Client] ──► POST /upload_style   ──► [Flask] ──► Save to /data/temp-styles    ──► Volume.commit()
+[Client] ──► GET /predict?person_preserve=true 
+                │
+                ├──► [Flask] Pre-captures request parameters (prevents context teardown error)
+                ├──► [Flask] Invokes run_nst_gpu.remote_gen(config) over Modal gRPC
+                │       │
+                │       ├──► [Modal GPU] Reloads Volume & loads content/style tensors
+                │       ├──► [Modal GPU] Executes Faster R-CNN person detection
+                │       ├──► [Modal GPU] Executes RMBG-2.0 background segmentation
+                │       ├──► [Modal GPU] Computes VGG19 content & Gram matrix style losses
+                │       ├──► [Modal GPU] Executes 600 L-BFGS CUDA optimization iterations
+                │       └──► [Modal GPU] Composites person back over output & commits Volume
+                │
+                └──► [Flask] Streams real-time SSE progress events to Client
+[Client] ◄── GET /data/output-images/... ◄── [Flask] Serves final image from Volume
+```
+
+---
+
+## 4. DEEP LEARNING & COMPUTER VISION PIPELINE
+
+The core execution path inside `neural_style_transfer.py`, `utils/segmentation.py`, and `models/definitions/vgg_nets.py` comprises three machine learning subsystems:
+
+### 4.1 Subsystem A: Human Detection (Faster R-CNN)
+- **Model Architecture:** `fasterrcnn_resnet50_fpn` with COCO pretrained weights (`FasterRCNN_ResNet50_FPN_Weights.DEFAULT`).
+- **Function:** `detect_person_boxes(rgb_uint8, device, confidence_threshold=0.7)` in [`utils/segmentation.py`](file:///d:/Neural_Style_Transfer/Modal_deployment/utils/segmentation.py).
+- **Logic:**
+  1. Input RGB image `[H, W, 3]` is converted to a normalized float tensor `[1, 3, H, W]`.
+  2. Bounding boxes are filtered by COCO class index `label == 1` (person) and `confidence_score > 0.7`.
+  3. Returns pixel coordinate boxes `[(x1, y1, x2, y2), ...]`.
+
+### 4.2 Subsystem B: Saliency Segmentation (RMBG-2.0 / BiRefNet)
+- **Model Architecture:** `briaai/RMBG-2.0` (Bria AI Background Removal Model v2.0 based on BiRefNet architecture).
+- **Authentication:** Authenticates via Hugging Face Access Token passed in `token=HF_TOKEN` from Modal Secret `hf-secret`.
+- **Function:** `compute_person_mask(...)` in [`utils/segmentation.py`](file:///d:/Neural_Style_Transfer/Modal_deployment/utils/segmentation.py).
+- **Processing Steps:**
+  1. Image is resized to `1024x1024` and normalized with ImageNet statistics `mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]`.
+  2. Output logits are evaluated with `torch.sigmoid(raw)` and interpolated bilinearly back to original dimensions `(H, W)`.
+  3. **Bounding-Box Bounding (Allowed Mask):** An binary mask `allowed` is computed by padding detected person boxes (`box_padding=15px`). The raw saliency mask is multiplied element-wise by `allowed` (`mask_float = mask_float * allowed`). This prevents background elements (e.g. chairs, statues) from accidentally being categorized as foreground.
+  4. **Alpha Feathering:** Gaussian blur `cv.GaussianBlur` with kernel radius `feather_radius=21` is applied to smooth edge transitions between stylized background and un-stylized foreground.
+
+### 4.3 Subsystem C: Neural Style Transfer (VGG19 + L-BFGS)
+- **Model Architecture:** Modified VGG19 network defined in [`models/definitions/vgg_nets.py`](file:///d:/Neural_Style_Transfer/Modal_deployment/models/definitions/vgg_nets.py).
+  - Content Layer: `conv4_2` (Index 4)
+  - Style Layers: `relu1_1`, `relu2_1`, `relu3_1`, `relu4_1`, `relu5_1` (Indices 0, 1, 2, 3, 5)
+- **Gram Matrix Loss:**
+  $$\mathcal{G}_{ij}^l = \frac{1}{C_l \cdot H_l \cdot W_l} \sum_k F_{ik}^l F_{jk}^l$$
+  Computes feature correlation across channels to capture style texture without preserving spatial structure.
+- **Total Variation Loss (TV Loss):**
+  $$\mathcal{L}_{TV} = \sum_{c,h,w} |x_{c,h+1,w} - x_{c,h,w}| + |x_{c,h,w+1} - x_{c,h,w}|$$
+  Smooths high-frequency noise artifacts created during gradient updates.
+- **Optimization Loop:**
+  - Optimizer: `torch.optim.LBFGS` with `lr=1.0` and max iterations = 600.
+  - Image Initialization: Initialized directly from original content image pixels (`initial_method='content'`).
+  - Loss Function: 
+    $$\mathcal{L}_{total} = \alpha \mathcal{L}_{content} + \beta \mathcal{L}_{style} + \gamma \mathcal{L}_{TV}$$
+    Where default weights are $\alpha = 10^5$, $\beta = 300$, $\gamma = 1.0$.
+
+### 4.4 Subsystem D: Final Compositing
+- **Function:** `save_and_maybe_display(...)` in [`utils/utils.py`](file:///d:/Neural_Style_Transfer/Modal_deployment/utils/utils.py).
+- **Formula:**
+  $$I_{final} = \alpha \cdot I_{original} + (1 - \alpha) \cdot I_{stylized}$$
+  Where $\alpha \in [0.0, 1.0]$ represents the continuous float mask.
+
+---
+
+## 5. DETAILED CODEBASE MAP & REPOSITORY STRUCTURE
+
+```
+Modal_deployment/
+├── app.py                      # Flask WSGI Web Application & Route Handlers
+├── modal_app.py                # Modal Cloud Entrypoint, Container Spec, & GPU Function
+├── modal_diag.py               # Automated Remote GPU Diagnostic & Verification Harness
+├── neural_style_transfer.py    # Core NST Optimization Loop & Execution Engine
+├── requirements.txt            # Python Package Dependencies
+├── Dockerfile                  # Standalone Container Build Definition
+├── .dockerignore               # Container Ignored Files Manifest
+├── .gitignore                  # Git Version Control Exclusions
+├── README.md                   # Public Repository Overview & Usage Guide
+│
+├── models/
+│   └── definitions/
+│       └── vgg_nets.py         # PyTorch VGG16 and VGG19 Feature Extractor Definitions
+│
+├── utils/
+│   ├── segmentation.py         # Faster R-CNN & RMBG-2.0 Mask Generation Engine
+│   ├── utils.py                # Image IO, Preprocessing, Gram Matrix, & Compositing Helpers
+│   └── video_utils.py          # Intermediate Progressive Frame Video Generation (FFmpeg)
+│
+├── static/
+│   ├── index.html              # Single-Page Web Application Frontend Template
+│   ├── style.css               # Modern Glassmorphic Dashboard Stylesheet
+│   └── script.js               # EventStream (SSE) Client Logic & Drag-and-Drop Handlers
+│
+└── data/                       # Mount Target for Modal Persistent Volume
+    ├── content-images/         # Uploaded / Default Content Images
+    ├── style-images/           # Stock Library Style Images
+    ├── temp-styles/            # Custom User-Uploaded Temporary Style Images
+    └── output-images/          # Final Rendered Outputs & Step Iteration Snapshots
+```
+
+---
+
+## 6. KEY FILE ANALYSIS & INVENTORY
+
+### 6.1 `modal_app.py`
+- **Purpose:** Defines the Modal deployment manifest, container environment, and GPU execution wrapper.
+- **Key Symbols:**
+  - `app = modal.App("neural-style-transfer")`: Registers Modal project instance.
+  - `volume = modal.Volume.from_name("nst-data-vol", create_if_missing=True)`: Mounts persistent volume.
+  - `nst_image`: Debian-slim Linux image spec installing system libraries (`libgl1`), PyTorch, Transformers, `kornia`, and pre-caching VGG + FasterRCNN weights during container build.
+  - `@app.function(gpu="A10G", secrets=[modal.Secret.from_name("hf-secret")])`: Configures Nvidia A10G GPU allocation and injects `HF_TOKEN`.
+  - `run_nst_gpu(config)`: Asynchronous generator function executing NST in a background thread while streaming log events through a thread-safe `queue.Queue`.
+  - `@modal.wsgi_app() def flask_app()`: Wraps the Flask WSGI instance for cloud web routing.
+
+### 6.2 `app.py`
+- **Purpose:** Manages Flask web routes, file uploads, static asset serving, and SSE event streaming.
+- **Key Routes:**
+  - `GET /`: Serves `static/index.html`.
+  - `GET /styles`: Returns JSON list of available style images in `/data/style-images`.
+  - `POST /upload_content`: Saves uploaded content file to `/data/content-images/` and triggers `vol.commit()`.
+  - `POST /upload_style`: Saves custom style image to `/data/temp-styles/` with a unique UUID prefix.
+  - `GET /predict`: Server-Sent Events (SSE) streaming endpoint.
+    - *Critical Context Guard:* Captures `request.args` parameters *before* entering the generator closure `generate()`. Wraps generator in `stream_with_context(generate())` to prevent request context teardown errors.
+
+### 6.3 `utils/segmentation.py`
+- **Purpose:** Implements person detection and saliency mask extraction.
+- **Key Functions:**
+  - `load_human_detection_model(device)`: Instantiates and caches Faster R-CNN ResNet50 FPN.
+  - `detect_person_boxes(rgb_uint8, device, confidence_threshold=0.7)`: Runs object detection and filters for human bounding boxes.
+  - `load_segmentation_model(device)`: Instantiates `briaai/RMBG-2.0` using `token=os.environ.get("HF_TOKEN")`. Fails loudly with detailed traceback if authentication or weights fail.
+  - `compute_person_mask(...)`: Generates, box-constrains, interpolates, and Gaussian-feathers the foreground alpha mask.
+
+### 6.4 `neural_style_transfer.py`
+- **Purpose:** Core optimization engine for NST.
+- **Key Logic:**
+  - Prepares content and style tensors on CUDA.
+  - Executes Person-Preserve segmentation block if `config['enable_person_preserve'] == True`.
+  - Initializes optimizing tensor `optimizing_img`.
+  - Runs L-BFGS optimizer step closure for `max_iter=600`.
+  - Invokes `save_and_maybe_display()` to save intermediate and final composite images.
+
+### 6.5 `utils/utils.py`
+- **Purpose:** Image transformation, loss functions, and image writing.
+- **Key Functions:**
+  - `prepare_image()`: Scales image values to `[0, 255]`, subtracts ImageNet mean `[123.675, 116.28, 103.53]`.
+  - `gram_matrix()`: Computes normalized Gram feature correlation matrix.
+  - `total_variation_loss()`: Computes spatial difference loss across adjacent pixels.
+  - `save_and_maybe_display()`: Applies inverse ImageNet normalization, blends person alpha mask with original RGB image, and saves output to disk via OpenCV.
+
+---
+
+## 7. ENVIRONMENT & INFRASTRUCTURE SPECIFICATION
+
+| Component | Technical Selection | Rationale / Specification |
+|---|---|---|
+| **Python Runtime** | Python 3.10.17 | Optimal compatibility between PyTorch 2.1+, Transformers, and CUDA 12 |
+| **GPU Hardware** | Nvidia A10G (24 GB VRAM) | Delivers ~7.8s 600-iteration execution (~3.65x faster than T4) at optimal cost/sec |
+| **Cloud Runtime** | Modal Container System | Serverless GPU orchestration with zero idle infrastructure cost |
+| **Persistent Storage**| Modal Volume (`nst-data-vol`) | POSIX-compatible shared volume mounted at `/data` across web & GPU containers |
+| **Edge Proxy** | Cloudflare Workers | Custom domain routing (`artfloe.fun`) with reverse proxying to Modal WSGI |
+| **Secrets Manager** | Modal Secret (`hf-secret`) | Injects `HF_TOKEN` into GPU container environment for Hugging Face authentication |
+
+---
+
+## 8. STEP-BY-STEP OPERATIONAL RUNBOOK
+
+### 8.1 Local Environment Setup
+```bash
+# 1. Clone repository
+git clone https://github.com/Sohan-spec/ArtFlow-CloudFlare.git
+cd ArtFlow-CloudFlare
+
+# 2. Create virtual environment & install dependencies
+python -m venv venv
+source venv/bin/activate  # On Windows: .\venv\Scripts\activate
+pip install -r requirements.txt
+
+# 3. Launch local Flask server
+python app.py
+```
+
+### 8.2 Production Modal Deployment
+```powershell
+# 1. Authenticate Modal CLI
+python -m modal setup
+
+# 2. Create Hugging Face Secret on Modal
+modal secret create hf-secret HF_TOKEN=your_huggingface_token_here
+
+# 3. Deploy application (PowerShell environment encoding specified for Windows compatibility)
+$env:PYTHONIOENCODING="utf-8"; python -m modal deploy modal_app.py
+```
+
+### 8.3 Remote GPU Diagnostic Testing
+To run an isolated remote GPU benchmark directly without opening a web browser:
+```powershell
+$env:PYTHONIOENCODING="utf-8"; python -m modal run modal_diag.py
+```
+
+---
+
+## 9. KNOWN GOTCHAS & ENGINEERING DECISIONS
+
+1. **Flask Generator Request Context Teardown:**
+   - *Problem:* Accessing `request.args` inside a streaming `Response(generate())` generator raises `RuntimeError: Working outside of request context` because Flask tears down the context before WSGI iterates the response.
+   - *Solution:* All request parameters MUST be extracted into local variables *prior* to defining the generator function, and wrapped in `stream_with_context(generate())`.
+
+2. **RMBG-1.4 vs RMBG-2.0 Tensor Structure Mismatch:**
+   - *RMBG-2.0:* Returns a list of tensors where `preds[-1]` is the raw logit tensor requiring `torch.sigmoid()`.
+   - *RMBG-1.4:* Returns a nested list-of-lists structure where `preds[0][0]` is the prediction tensor requiring min-max scaling `(x - min) / (max - min)`. Applying `torch.sigmoid()` directly to a list causes a `TypeError`.
+
+3. **Modal Secret Scope:**
+   - Modal secrets are attached to functions at runtime (`@app.function(secrets=[...])`) and are **not** accessible during image build time (`modal.Image.run_commands`). Model loading for authenticated gated repos must happen at runtime inside the function.
+
+4. **Cross-Container Volume Sync Propagation:**
+   - Persistent volume writes in one container require an explicit `.commit()` call to be visible to other containers. The receiving container must issue `.reload()`. A retry loop with a 1-second delay is implemented in `app.py` and `modal_app.py` to handle propagation lag gracefully.
+
+## 10. USER INTERFACE & FRONTEND FEATURE INVENTORY
+
+The user interface defined in [`static/index.html`](file:///d:/Neural_Style_Transfer/Modal_deployment/static/index.html), [`static/style.css`](file:///d:/Neural_Style_Transfer/Modal_deployment/static/style.css), and [`static/script.js`](file:///d:/Neural_Style_Transfer/Modal_deployment/static/script.js) includes the following complete feature set:
+
+1. **Interactive Glassmorphic Interface:** Dark-mode glassmorphic dashboard UI with ambient background layer (`#bg-layer`) that dynamically blurs and displays the currently selected style artwork in full-screen.
+2. **Drag & Drop Upload Zone:** Interactive content file dropzone supporting click-to-browse or native OS drag-and-drop image files with immediate FileReader base64 preview.
+3. **Immediate Content Upload Prefetching:** Uploads the content image asynchronously to `/upload_content` upon selection in the background, eliminating upload delay when clicking "Transform".
+4. **Dynamic Style Gallery & Auto-Selection:** Auto-fetches available style catalog from `/styles`, builds an interactive thumbnail slider, and auto-selects *Starry Night* (`vg_starry_night.jpg`) as default.
+5. **Custom User Style Upload:** Add-style button in the style slider allows users to upload custom style images (`/upload_style`). Uploaded custom styles receive a unique UUID, instant slider injection, and auto-selection.
+6. **Formatted Style Toast Notifications:** Displays a floating glass toast notification (`#style-toast`) with clean formatted titles (e.g. `vg_starry_night.jpg` $\rightarrow$ "Starry Night") whenever a user switches styles.
+7. **Real-time SSE Progress Modal:** Modal popup displaying live progress bar, percentage calculations, and raw stdout streaming log events received from the GPU container via Server-Sent Events (`EventSource('/predict')`).
+8. **High-Resolution Masterpiece View & Automatic Download Naming:** Displays final composited image upon completion, with a download button automatically formatted as `<content_name>_<style_name>_artflow.jpg`.
+
+---
+
+*End of Technical Specification Document.*

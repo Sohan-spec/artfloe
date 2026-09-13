@@ -1,0 +1,233 @@
+---
+title: "Improvement Plan"
+description: "Prepared: August 2, 2026 Scope: All features from the Commercial Roadmap, Future Features Appendix, and ARTFLOW.txt notes that were assessed as worth building, sequenced with the infrastructure they depend on. Every model/tool recommendatio"
+---
+
+# ArtFloe Commercialization & Feature Integration Plan
+**Prepared:** August 2, 2026
+**Scope:** All features from the Commercial Roadmap, Future Features Appendix, and ARTFLOW.txt notes that were assessed as worth building, sequenced with the infrastructure they depend on. Every model/tool recommendation below is grounded in research current as of August 2, 2026 — sources listed at the end of each section and consolidated in References.
+
+---
+
+## 0. Priority Order (why this order)
+
+You cannot charge subscription money without infrastructure that doesn't exist yet. Everything is sequenced so nothing is built on a foundation that isn't there yet.
+
+1. **Phase 0 — Foundation:** Auth, database, per-user storage isolation, payments, content moderation, usage metering
+2. **Phase 1 — Fix the core product flaw:** Subtle subject stylization + per-style color grading (the "pasted-on" problem)
+3. **Phase 2 — Monetization-facing features:** High-res exports, before/after comparison, style strength slider
+4. **Phase 3 — Differentiators:** Preserve additional objects, style mixing, style presets
+5. **Phase 4 — Content/marketing polish:** Renaming styles, era/mood collections, smart cropping
+
+Each phase below has technical decisions, model choices, and integration notes.
+
+---
+
+## PHASE 0 — FOUNDATION (Auth, Billing, Storage, Moderation)
+
+### 0.1 Authentication & Database
+
+**Decision: Supabase (Auth + Postgres + Storage), not Clerk/Auth0/Better Auth.**
+
+Reasoning: your stack is Flask (Python), not Next.js/React. Most 2026 comparisons default to Clerk or Better Auth, but both are optimized for the Next.js/TypeScript ecosystem and add friction in a Python backend. Supabase Auth ships an official Python client, bundles Postgres (which you need anyway for accounts/history/credits) and S3-compatible Storage with Row Level Security (which solves your per-user file isolation problem for free), and is explicitly called out as the practical default for teams not on Next.js: *"Supabase Auth is what happens when authentication ships as a free feature inside a larger platform... For teams already using Supabase for their backend, adding auth costs nothing extra"* and is recommended specifically for *"Solo devs, early-stage SaaS, teams using Supabase for database and storage already"* (buildmvpfast.com, June 2026). Pricing is also the most favorable for an indie project: 50,000 MAU free, then $0.00325/MAU (merginit.com, June 2026) versus Clerk's $0.02/MAU after 10K free.
+
+**What this buys you beyond login:**
+- Postgres tables for: users, generation history, favorites, credit balances, subscription tier
+- Storage buckets with **Row Level Security policies scoped to `auth.uid()`** — this directly fixes the filename-collision bug your dev log already found, because every user's uploads live under `storage/{user_id}/...` instead of a flat shared namespace on the Modal Volume
+- No separate service to manage — one Postgres instance is your source of truth for accounts, credits, and history simultaneously
+
+**Integration steps:**
+1. Create Supabase project, define `users`, `generations`, `credits`, `favorites` tables
+2. Add `supabase-py` to `requirements.txt`, initialize client in `app.py`
+3. Frontend: swap the current stateless upload flow for a signed-in session; attach `user_id` to every `/upload_content`, `/upload_style`, `/predict` call
+4. Modal GPU worker writes outputs to `/data/output-images/{user_id}/{generation_id}/...` instead of a flat directory — this is the concrete fix for the caching/filename-reuse bug in your dev log
+
+### 0.2 Payments & Subscription Model
+
+**Decision: Stripe Checkout + Stripe Billing for subscriptions, backed by a self-owned credit ledger in Postgres — not Stripe's native Meters/usage-based billing API.**
+
+Reasoning: Stripe's own 2026 documentation on metered billing is explicit about a gap that matters for you: *"Stripe meters usage but does not gate it. There is no built-in mechanism to check 'does this customer have enough balance to generate this image?' before the action happens. You build that logic yourself"* (credyt.ai, April 2026). Since a GPU generation costs you real money the instant it runs, you need pre-generation balance gating, not post-hoc invoicing. The practical pattern used across 2026 SaaS billing guides is: Stripe handles checkout/subscription renewal, your own Postgres table holds the actual credit balance, and you decrement it atomically *before* invoking the Modal GPU function (starterpick.com, March 2026; buildmvpfast.com, April 2026 — both converge on "design your internal usage ledger, don't rely on Stripe as the real-time gate").
+
+**Concretely:**
+- `credits` table: `user_id`, `balance`, `plan_tier`, `renews_at`
+- Stripe Checkout Session for subscription signup (Free / Pro / Studio tiers)
+- Stripe webhook (`invoice.paid`, `customer.subscription.updated`) refills the `credits` balance in your DB on renewal
+- Flask route decorator checks `credits.balance > cost_of_operation` before calling `run_nst_gpu.remote_gen()`; decrements on success, refunds on failure
+- Your GPU cost per generation is roughly $0.002–0.003 at ~7.8s on an A10G (per your own architecture doc's stated throughput), so margins support a generous free tier — a small number of free generations/month is cheap customer acquisition, not a cost risk
+
+**Suggested tiers (starting point, not final pricing):**
+| Tier | Price | Generations/mo | Max export res | Notes |
+|---|---|---|---|---|
+| Free | $0 | 5 | 1080p | Watermark optional |
+| Pro | ~$9/mo | 100 | 4K | No watermark, style mixing |
+| Studio | ~$25/mo | 500 | 4K + priority queue | Object preservation, custom styles |
+
+### 0.3 Content Moderation (mandatory before public paid launch)
+
+**Decision: Self-hosted NudeNet as a first-pass filter, not a paid hosted API.**
+
+Reasoning: You already run GPU infrastructure on Modal, so self-hosting a lightweight classifier costs you almost nothing extra and avoids per-image fees. Current comparisons rank it accordingly: *"NudeNet — best for self-hosted deployments needing basic nudity filtering without sending data to third-party APIs — The only viable fully open-source nudity detection option"* (mixpeek.com, July 2026). Run it as a synchronous gate immediately after `/upload_content` and `/upload_style`, before the image ever touches the paid GPU pipeline. If you want a second opinion for edge cases or plan to scale past a hobby audience, Sightengine is called out as the best price-to-accuracy option for startups and can be added later as a secondary check without re-architecting anything (mixpeek.com, July 2026).
+
+**Integration steps:**
+1. Add NudeNet to the Modal image build (small model, runs on CPU — no need to burn A10G time on this check)
+2. Gate `/upload_content` and `/upload_style`: reject and don't commit to the Volume/Supabase Storage if flagged
+3. Log flagged attempts (don't silently drop — you want an audit trail for abuse patterns)
+4. Revisit with a hosted API (Sightengine/Hive) once volume or liability justifies the added cost
+
+---
+
+## PHASE 1 — FIX THE CORE FLAW (Subject Blending)
+
+This is the most valuable pair of changes in any of the three documents you gave me — it fixes the thing that currently makes composites look like "a person standing in front of a painting," which is the single biggest quality gap in the current product.
+
+### 1.1 Subtle Subject Stylization (5–10% blend)
+
+**Decision: No new model needed — this is a one-line change to your existing compositing formula.**
+
+Your architecture doc already defines the compositing step as:
+```
+I_final = α · I_original + (1 - α) · I_stylized
+```
+Currently α = 1.0 wherever the person mask applies (fully preserved). Change this to a tunable α in the 0.90–0.95 range specifically inside the person-mask region, sourced from `compute_person_mask()`'s existing alpha output. This requires zero new dependencies and touches only `save_and_maybe_display()` in `utils/utils.py`. Expose it as a user-facing toggle ("Blend subject into scene") rather than a silent default, since full preservation is your stated differentiator and some users will want that literal look.
+
+**Effort: trivial** — this is a parameter change plus a UI toggle, not a new pipeline stage.
+
+### 1.2 Per-Style Color Grading for the Preserved Subject
+
+**Decision: 3D LUT-based color grading per style, not a general-purpose deep image-harmonization network.**
+
+There are two technical routes here and the research is clear on which one fits your situation:
+- **Learned harmonization networks** (e.g., DoveNet, PCT-Net, or diffusion-based harmonization) analyze the background and infer a correction for the foreground automatically. These are more "automatic" but require a trained model, add GPU latency, and are tuned for photographic composites — not for matching a person against a *stylized painting*, which is a different color distribution than anything these models were trained on.
+- **3D LUT-based color transfer**, where each named style (Dreamy, Dark Academia, Fantasy, etc.) ships with a fixed, hand-tuned LUT that grades only the person-mask region. This is exactly the approach your own ARTFLOW.txt notes proposed (cool/purple for Dreamy, warm/muted for Dark Academia, cyan/gold for Fantasy), and it's also the standard technique in the color-grading industry for consistent, reproducible looks: LUTs are described as the practical alternative to reference-image color-transfer methods specifically *because* reference-based methods "require carefully picking reference images, otherwise the transferred foreground may have obvious artifacts" (arxiv.org/pdf/2205.00687, "Deep Video Harmonization" — the same finding is echoed in the HYouTube dataset paper). Since you already have a fixed, curated style catalog, you can hand-author one LUT per style once and reuse it forever — no model, no inference cost, no artifacts risk.
+
+**Integration steps:**
+1. Author one `.cube` LUT per style (or per style-collection, see Phase 4) — can be done in any color grading tool (DaVinci Resolve free tier, or generated programmatically)
+2. Apply the LUT only within the person-alpha-mask region using `kornia` or OpenCV's LUT application (you already have `kornia` in `modal_app.py` dependencies for BiRefNet)
+3. Blend the graded result at a controllable strength (borrow the same α pattern as 1.1) — industry guidance on LUT application explicitly recommends starting around 50–70% strength rather than 100%, comparing against the ungraded image before committing (aaapresets.com, June 2026 guide on LUT grading)
+4. Ship both 1.1 and 1.2 together — they solve the same visible problem and are cheap enough to bundle in one release
+
+**Effort: small** — no new ML dependency, mostly art-direction time (authoring LUTs) plus a straightforward OpenCV/kornia integration.
+
+---
+
+## PHASE 2 — MONETIZATION-FACING FEATURES
+
+### 2.1 High-Resolution Exports (2K/4K)
+
+**Decision: Real-ESRGAN, self-hosted on your existing Modal A10G, gated behind paid tiers.**
+
+Real-ESRGAN remains the default recommendation across every 2026 upscaler comparison for exactly your use case (AI-generated/stylized art, not raw photography): *"Real-ESRGAN is the best general local upscaler in 2026... free, offline, and need only ~2–4 GB of VRAM"* (localaimaster.com, June 2026), and separately, *"For most AI-generated images, Real-ESRGAN 4x+ is a strong upscaler in 2026 — it adds detail and handles anime and photorealism well"* (zsky.ai, ranked comparison). Since you already have GPU containers on Modal and your outputs are stylized/painterly rather than photographic, Real-ESRGAN's strengths line up directly with your content type — you don't need a paid API (WaveSpeed, Topaz, Crystal) since you already have the compute.
+
+**Note on "faithful vs. creative" upscaling:** the 2026 landscape splits upscalers into faithful (sharpen existing detail — Real-ESRGAN, Topaz, Upscayl) and creative/diffusion-based (invent new detail — Magnific, Crystal). For NST output you want **faithful**, since your generations already have final composition and texture; a creative upscaler would risk altering the stylization you already computed. This confirms Real-ESRGAN as the right category, not just a cheap option.
+
+**Integration steps:**
+1. Add `realesrgan` (Real-ESRGAN-ncnn or the PyTorch port) to the Modal GPU image
+2. Run upscaling as a distinct, optional post-processing step after the composite step — only triggered for Pro/Studio tier exports to avoid burning GPU time on free-tier previews
+3. Cache the 2K/4K output on Supabase Storage keyed by `generation_id` so re-downloads don't re-run inference
+4. Free tier gets the native NST output resolution (no upscale call — zero added cost)
+
+### 2.2 Before/After Comparison
+
+**Decision: Pure frontend feature, no model or backend change.**
+
+This needs a draggable split-view slider comparing `content-images/{id}` vs `output-images/{id}`. Implement client-side (HTML5 canvas or a CSS clip-path slider) — both images already exist on your Volume/Storage, so this is UI work only. No research needed here; flagging it explicitly as zero-infrastructure so it doesn't get scheduled after harder items by mistake.
+
+### 2.3 Style Strength Slider
+
+**Decision: Expose your existing loss weight α (content) and β (style) as a single blended UI control, no new model.**
+
+Your architecture doc already defines `L_total = α·L_content + β·L_style + γ·L_TV` with fixed defaults (α=10⁵, β=300, γ=1.0). A "strength" slider from 0–100% should map to a pre-computed interpolation between "mostly content" and "mostly style" weight ratios — you don't need to re-derive this per request; precompute 5–10 discrete presets along that curve at build time so the slider feels instant rather than re-running LBFGS optimization search per adjustment. (If you want true continuous control without re-running the full 600-iteration optimization per slider tick, the cheaper implementation is compositing between the *original NST output* and the *content image* post-hoc at a chosen alpha — visually similar effect, zero extra GPU cost, though technically distinct from re-weighting the loss function itself. Decide based on whether users are adjusting before or after generation.)
+
+---
+
+## PHASE 3 — DIFFERENTIATORS
+
+### 3.1 Preserve Additional Objects (pets, vehicles, architecture)
+
+**Decision: Replace the Faster R-CNN + RMBG-2.0 two-stage pipeline with SAM 3 for this feature specifically, keep the existing pipeline for the default "preserve people" case.**
+
+This is the single biggest model-selection decision in this document, so it's worth explaining in full. Your current pipeline is a *closed-vocabulary* two-stage system: Faster R-CNN (COCO's 80 fixed classes) detects boxes, RMBG-2.0 mattes within those boxes. To "preserve pets, vehicles, and architecture" with that architecture, you'd need to either retrain/extend the detector's class list or bolt on separate per-class models — exactly the tuning tax flagged in our last conversation.
+
+Meta released **SAM 3** in November 2025, and by mid-2026 it's established as the standard tool for exactly this job: open-vocabulary instance segmentation from a text prompt, in a single model call. *"SAM 3 handles the full task in a single model: a text encoder processes the prompt, a fusion encoder matches it against image features, and a mask decoder produces instance masks directly, with a presence token that first checks whether the concept exists in the image at all"* (blog.roboflow.com, July 2026). It's trained on *"4 million annotated concepts and supports 270,000 concepts at inference"* (same source) — meaning "dog," "car," "building facade," or any other noun a user might want to preserve is already covered without any additional training or per-class engineering. This directly replaces what used to require a two-model Grounded-SAM pipeline (Grounding DINO + SAM): *"For production deployments, SAM 3's native text prompting substantially reduces pipeline complexity. Previously, segmenting objects by description required a two-model pipeline... SAM 3 collapses this into a single model call"* (robolabs.ai, February 2026).
+
+**Why not just extend Faster R-CNN + RMBG-2.0 instead:** RMBG-2.0 is a strong matting model but, per your own dev log, it needs to be *gated* by a detector to avoid falsely preserving "lions, buildings, random foreground objects" — the fix you already implemented for people was to constrain it with Faster R-CNN boxes. Extending that fix to arbitrary object categories means retraining or fine-tuning a detector per category, which is exactly what SAM 3's open vocabulary makes unnecessary.
+
+**Practical integration path:**
+1. Keep the current Faster R-CNN → RMBG-2.0 pipeline as the default "preserve people" fast path (it's fast, cheap, and already working)
+2. For the "preserve additional objects" feature specifically, add a SAM 3 call gated behind a user-selected prompt (e.g., a chip-select UI: "person," "dog," "car," "custom text") — SAM 3 returns the instance mask directly, replacing the FasterRCNN-box-then-RMBG-matte two-step for that object
+3. If SAM 3 licensing or hosting friction becomes a blocker, the fallback is Grounded-SAM (Grounding DINO + SAM2, Apache 2.0 licensed) which still "matters" per current commentary specifically for teams needing licensing flexibility or separate box+mask outputs (eng-mhasan.medium.com, January 2026) — keep this as your Plan B, not your first build
+
+**Effort: medium** — new model dependency, but replaces rather than stacks onto the existing detection logic for this specific feature.
+
+### 3.2 Style Mixing / Weighted Style Mixing
+
+**Decision: Weighted dual-style Gram loss, no new model — but budget real tuning time.**
+
+Extend the style loss term to `β1·L_style1 + β2·L_style2` where `β1 + β2` sums to your existing style weight budget, with the mixing percentage exposed as a single slider (e.g., "60% Monet / 40% Van Gogh"). This is architecturally simple given your existing Gram matrix computation — no new dependency. The part the source documents undersell: naive linear blending of two Gram-matrix targets frequently produces muddy results rather than a clean blend, so plan for an internal QA pass across several style pairs before shipping, not just a slider that technically works.
+
+### 3.3 Style Presets
+
+**Decision: Fixed parameter bundles (α/β/γ weight sets + optional LUT) per preset name — no new model.**
+
+"Portrait," "Landscape," "Architecture" presets are just pre-tuned weight combinations plus the relevant style/LUT choice from Phase 1.2's catalog. Build this after 1.2 and 3.2 exist, since presets are most useful once you have LUTs and mixing to draw on.
+
+---
+
+## PHASE 4 — CONTENT & MARKETING POLISH
+
+### 4.1 Emotion/Mood Naming & Era Collections (Renaming Styles, Time Period Styles, Mood Collections)
+
+**Decision: Pure content/taxonomy work, no engineering.**
+
+Map existing style images to display names (Dreamy, Cozy Autumn, Silent Hill, Victorian, Cyberpunk 2090, etc.) and group into collections in your existing `/styles` JSON response. Combine with the Phase 1.2 LUT system — each named style should own both a display name *and* its color-grading LUT, so "Dreamy" is simultaneously a marketing label and a technical parameter bundle. No model research needed; this is UX/content work.
+
+### 4.2 Smart Cropping
+
+**Decision: Low priority, deterministic aspect-ratio crops around the existing person bounding box — no new model.**
+
+You already compute person bounding boxes via Faster R-CNN. Generating Instagram (1:1, 4:5), story (9:16), and wallpaper (16:9) crops centered on that box is a deterministic post-processing step, not a model decision. Ship last, it's the lowest-differentiation item in either document.
+
+---
+
+## Summary Table
+
+| Feature | Phase | New model/service | Effort |
+|---|---|---|---|
+| Auth + DB + per-user storage | 0 | Supabase | Medium |
+| Payments + credit ledger | 0 | Stripe Checkout/Billing | Medium |
+| Content moderation | 0 | NudeNet (self-hosted) | Small |
+| Subtle subject stylization | 1 | None (α tuning) | Trivial |
+| Per-style color grading | 1 | 3D LUTs + kornia/OpenCV | Small |
+| High-res exports | 2 | Real-ESRGAN | Small–Medium |
+| Before/After comparison | 2 | None (frontend) | Trivial |
+| Style strength slider | 2 | None (loss weight/precomputed presets) | Small |
+| Preserve additional objects | 3 | SAM 3 (fallback: Grounded-SAM) | Medium |
+| Style mixing | 3 | None (dual Gram loss) | Medium (tuning) |
+| Style presets | 3 | None (parameter bundles) | Small |
+| Naming/era/mood collections | 4 | None (content work) | Small |
+| Smart cropping | 4 | None (deterministic crop) | Small |
+
+---
+
+## References
+
+- fal.ai — "10 Best Background Remover APIs in 2026" — https://fal.ai/learn/tools/best-background-remover-apis-2026
+- bestaiweb.ai — "Production Background Removal: BRIA, Photoroom & rembg" (May 2026) — https://www.bestaiweb.ai/how-to-build-a-production-background-removal-pipeline-with-bria-rmbg-2-0-photoroom-api-and-rembg-in-2026/
+- Roboflow Blog — "Open Vocabulary Segmentation with SAM 3 and Roboflow" (July 2026) — https://blog.roboflow.com/open-vocabulary-segmentation/
+- Robolabs.ai — "Beyond Detection: How Open-Vocabulary and Foundation Models Are Democratizing Computer Vision" (Feb 2026) — https://www.robolabs.ai/resources/blog/open-vocabulary-foundation-models-vision-language
+- Medium (Mohamed Hasan) — "Grounded-SAM in 2026: Why It Still Matters (Even in the SAM3 Era)?" (Jan 2026) — https://eng-mhasan.medium.com/grounded-sam-in-2026-why-it-still-matters-even-in-the-sam3-era-15315532365a
+- arXiv 2511.16719 — "SAM 3: Segment Anything with Concepts" (Nov 2025) — https://arxiv.org/html/2511.16719v1
+- arXiv 2205.00687 — "Deep Video Harmonization with Color Mapping Consistency"
+- aaapresets.com — "Master Video Color Grading with LUTs in 2026" — https://aaapresets.com/blogs/lightroom-workflow-academy-for-photo-editors-aaapresets/the-ultimate-guide-to-mastering-video-color-grading-with-luts-in-2026
+- localaimaster.com — "Local AI Image Upscaling (2026): ESRGAN, GFPGAN & 4x" (June 2026) — https://localaimaster.com/blog/ai-image-upscaling-local
+- zsky.ai — "Best AI Image Upscalers 2026: 6 Tested + Ranked" — https://zsky.ai/blog/ai-upscaling-comparison
+- rangy.ai — "Best AI Image Upscalers 2026 — Topaz, Magnific, Crystal" (May 2026) — https://rangy.ai/blog/best-ai-image-upscaler-2026/
+- mixpeek.com — "Best NSFW Detection APIs in 2026 - Tested & Ranked" (July 2026) — https://mixpeek.com/curated-lists/best-nsfw-detection-apis
+- buildmvpfast.com — "Best Auth Providers 2026: Clerk, Auth0, Supabase Compared" (June 2026) — https://www.buildmvpfast.com/blog/best-auth-providers-2026-clerk-supabase-comparison
+- merginit.com — "Free Auth Providers 2026: Clerk, Supabase, WorkOS & More Compared" (June 2026) — https://merginit.com/blog/13062026-free-auth-identity-providers-comparison
+- workos.com — "Top 5 authentication solutions for secure Flask apps in 2026" (Feb 2026) — https://workos.com/blog/top-authentication-solutions-flask-2026
+- credyt.ai — "Stripe Usage-Based Billing: How It Works + Code [2026]" (April 2026) — https://credyt.ai/blog/stripe-usage-based-billing-how-it-works
+- starterpick.com — "Stripe Metered Billing for SaaS Boilerplates 2026" (March 2026) — https://starterpick.com/guides/stripe-metered-billing-saas-boilerplate-2026
+- buildmvpfast.com — "Stripe Metered Billing Guide for SaaS (2026)" (April 2026) — https://www.buildmvpfast.com/blog/stripe-metered-billing-implementation-guide-saas-2026
+
+*End of document.*

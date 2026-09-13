@@ -1,8 +1,20 @@
 {
-  "theme": "default",
-  "appearance": {
-    "contentIcons": "accent"
-  },
+  "tabs": [
+    {
+      "tab": "Documentation",
+      "groups": [
+        {
+          "group": "Overview",
+          "pages": [
+            "artfloe_build_document",
+            "improvement_plan",
+            "system_architecture",
+            "the_entire_working_pipeline_written_acc_to_me"
+          ]
+        }
+      ]
+    }
+  ],
   "markdown": {
     "enabled": true
   },
@@ -14,67 +26,5 @@
         "label": "English"
       }
     ]
-  },
-  "navbar": {
-    "primary": {
-      "label": "Get started",
-      "href": "/quickstart"
-    }
-  },
-  "tabs": [
-    {
-      "tab": "Get started",
-      "groups": [
-        {
-          "group": "Get started",
-          "pages": [
-            "introduction",
-            "quickstart"
-          ]
-        },
-        {
-          "group": "Design your docs",
-          "pages": [
-            "components",
-            "customization"
-          ]
-        }
-      ]
-    },
-    {
-      "tab": "Guides",
-      "groups": [
-        {
-          "group": "Work with Thally",
-          "pages": [
-            "guides/create-a-site",
-            "guides/work-with-the-cli",
-            "guides/connect-ai-tools"
-          ]
-        }
-      ]
-    },
-    {
-      "tab": "API Reference",
-      "groups": [
-        {
-          "group": "Overview",
-          "pages": [
-            "api/introduction",
-            "api/authentication"
-          ]
-        }
-      ],
-      "api": {
-        "source": "openapi.yaml"
-      }
-    },
-    {
-      "tab": "Changelog",
-      "href": "/changelog"
-    }
-  ],
-  "ai": {
-    "chat": true
   }
 }

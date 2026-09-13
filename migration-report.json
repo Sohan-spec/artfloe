@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "sourceUrl": "https://github.com/Sohan-spec/ArtFlow-CloudFlare",
+  "platform": "unknown",
+  "pages": 4,
+  "assets": 3,
+  "components": 0,
+  "warnings": [
+    {
+      "code": "skipped-file",
+      "message": "Only Markdown and MDX are imported without an explicit converter.",
+      "source": "requirements.txt"
+    }
+  ],
+  "validation": {
+    "content": "passed",
+    "build": "failed",
+    "messages": [
+      "Dependency installation failed; production build was not attempted. Review the installation output before retrying."
+    ],
+    "diagnostics": [
+      {
+        "severity": "warning",
+        "message": "Missing \"description\" in frontmatter",
+        "file": "src/content/system_architecture.mdx"
+      }
+    ]
+  }
+}

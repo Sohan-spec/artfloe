@@ -1,0 +1,129 @@
+---
+title: "Error codes"
+description: "JSON error strings and HTTP statuses ArtFloe returns."
+---
+
+Most error bodies are `{ "error": "<code or message>" }`. Some add `message` and extra fields. SSE failures after `/predict` starts use `{ "error": "<message>" }` on the stream instead of an HTTP error body.
+
+Auth decorator failures (`missing_token`, `token_expired`, `invalid_token`, `recovery_required`, `recovery_token_not_allowed`) apply to every Bearer route.
+
+## Auth
+
+| `error` | Status | Cause |
+|---------|--------|--------|
+| `invalid_origin` | 403 | `Sec-Fetch-Site` missing or `cross-site` on a mutating route. |
+| `missing_token` | 401 | No `Authorization: Bearer`. |
+| `token_expired` | 401 | JWT expired. Call `POST /auth/refresh`. |
+| `invalid_token` | 401 | JWT failed JWKS verification, or `/auth/session` access token invalid. |
+| `recovery_required` | 403 | `POST /reset-password` got a normal login JWT. |
+| `recovery_token_not_allowed` | 403 | Recovery JWT used on a non-reset route. |
+| `signup_disabled` | 503 | Modal deploy without `TURNSTILE_SECRET_KEY`. |
+| `reset_disabled` | 503 | Modal deploy without Turnstile; password reset closed. |
+| `email and password are required` | 400 | Empty email or password on signup/login. |
+| `Password must be at least 8 characters.` | 400 | Signup or reset. |
+| `Password is too long.` | 400 | Password longer than 128 characters. |
+| `Signup failed. Please try again.` | 400/500 | CAPTCHA fail, GoTrue error, or session-after-signup fail. Message is generic on purpose. |
+| `Invalid credentials` | 401 | Login failed. |
+| `Too many sign-up attempts. Please try again in 15 minutes.` | 429 | 5 / 15 min / IP. |
+| `Too many login attempts. Please try again in 15 minutes.` | 429 | 5 / 15 min / IP. |
+| `Too many reset attempts. Please try again in 15 minutes.` | 429 | 5 / 15 min / IP on `/forgot-password`. |
+| `Please complete the CAPTCHA.` | 400 | Reset email without valid Turnstile when enforced. |
+| `email is required` | 400 | `/forgot-password` missing a plausible email. |
+| `Could not update password. Please request a new reset link.` | 400 | Recovery session could not change the password. |
+| `no_refresh_token` | 401 | `/auth/refresh` without cookie `af_refresh`. |
+| `refresh_failed` | 401 | Refresh token rejected; cookie cleared. |
+| `session_already_exists` | 409 | `/auth/session` while `af_refresh` is already set. |
+| `missing_tokens` | 400 | `/auth/session` missing `access_token` or `refresh_token`. |
+| `invalid_refresh` | 401 | Refresh token invalid or user id mismatch. |
+| `Too many requests. Please try again later.` | 429 | `/auth/session` 30 / 15 min / IP. |
+
+## Uploads and styles
+
+| `error` | Status | Cause |
+|---------|--------|--------|
+| `file_too_large` | 413 | Body over 8 MB. |
+| `upload_rate_exceeded` | 429 | Default 20 content or style uploads / user / hour. |
+| `No image uploaded` | 400 | Multipart missing field `image`. |
+| `No selected file` | 400 | Empty filename. |
+| `Invalid image format` | 400 | Bad extension, magic bytes, or over 4096 px / 16M pixels. |
+| `moderation_unavailable` | 422 | NudeNet failed closed. Retry later. |
+| `content_rejected` | 422 | NudeNet flagged the image. Nothing written. |
+| `custom_style_limit_exceeded` | 429 | At cap (default 100), or the count query failed (fail closed). |
+| `Failed to store style image` | 500 | Supabase Storage upload failed. |
+| `Failed to save style metadata` | 500 | `custom_styles` insert failed (Storage object rolled back when possible). |
+| `Failed to load custom styles` | 500 | List query failed. |
+| `Failed to delete style` | 500 | DB delete failed after Storage remove. |
+| `catalog_missing` | 404 | `data/style-catalog.json` not on disk. |
+| `catalog_invalid` | 500 | Catalog JSON failed to parse. |
+| `presets_missing` | 404 | `static/presets.json` missing. |
+| `presets_invalid` | 500 | Presets JSON failed to parse. |
+
+## Predict and crop
+
+| `error` | Status | Cause |
+|---------|--------|--------|
+| `Missing or invalid parameters` | 400 | Empty `content_img_name` or `style_img_name` after `secure_filename`. |
+| `predict_rate_exceeded` | 429 | Default 10 `/predict` / user / hour. |
+| `quota_exceeded` | 429 | Monthly cap. Includes `used`, `limit`, `remaining`, `reset_at`, `plan_tier`, `is_paid`, `upgrade_required`. |
+| `quota_unavailable` | 503 | Postgres RPC could not reserve a slot. GPU does not start. |
+| `content_not_found` | 404 | Content file missing on the volume. Reservation cancelled. Re-upload. |
+| `Custom style not found or access denied` | 404 | `custom_*` style not owned or not in Storage. Reservation cancelled. |
+| `prepare_failed` | 500 | Copy/materialize onto the volume failed. Reservation cancelled. Includes `message`. |
+| `method_not_allowed` | 405 | Non-POST `/predict`. |
+| `invalid_generation_id` | 400 | Crop or favorites path/body is not a UUID. |
+| `invalid_ratio` | 400 | Unknown crop key. `allowed` lists the four keys. |
+| `missing_output` | 404 | Generation row has no `output_image_path`. |
+| `output_dir_missing` | 404 | Output directory gone from the volume. |
+| `output_image_not_found` | 404 | No JPEG to crop. |
+| `crop_failed` | 500 | Primary crop decode/write failed. |
+| `db_error` | 500 | Ownership or list query failed (crop, history, favorites). |
+
+SSE `error` strings (HTTP 200 stream already open):
+
+| Message | Cause |
+|---------|--------|
+| `Content image path not found after volume sync. Please re-select your photo and try again.` | File vanished between reserve and GPU start. |
+| `Modal GPU execution failed: ...` | `run_nst_gpu` yielded `type: error`. |
+| `Failed to start GPU task. Please try again.` | `remote_gen` threw before a GPU error event. |
+| `Output image not found in <dir>` | Directory existed but no final JPEG. |
+| `Output directory not found after retries: <dir>` | Volume reload did not show the dir (10 attempts). |
+| `Invalid output directory name` / `Invalid content image name` / `Invalid style image name` | Local subprocess path rejected the names. |
+| `Local NST exited with code <n>` | Local `neural_style_transfer.py` non-zero. |
+| `Generation failed. Please try again.` | Local result emit failed. |
+| `Style transfer finished, but the result could not be registered for preview. Please try again.` | GPU succeeded; `generations` row could not be completed. |
+| (disconnect) | Client dropped the SSE. Row marked failed with `client_disconnected`. Quota is still consumed. |
+
+## Billing
+
+| `error` | Status | Cause |
+|---------|--------|--------|
+| `invalid_plan` | 400 | Checkout `plan` not `pro` or `max`, or Razorpay confirm could not map a plan. |
+| `billing_unavailable` | 503 | Could not load `profiles` billing columns. |
+| `billing_unconfigured` | 503 | Missing processor keys, or missing `APP_PUBLIC_ORIGIN` on Modal. May include `gateway`. |
+| `already_on_plan` | 409 | Paid and already on that plan (and not cancelling). Includes `plan`. |
+| `downgrade_via_manage` | 409 | Requested a lower plan. Use portal / in-app cancel. |
+| `cancel_pending` | 409 | Upgrade while `cancel_at_period_end` is set. |
+| `upgrade_failed` | 503/409 | In-place upgrade threw, or Razorpay sub not `active`. |
+| `checkout_failed` | 503 | Dodo session or Razorpay subscription create failed. |
+| `missing_subscription` | 409 | Upgrade/cancel without a stored subscription id. |
+| `razorpay_use_cancel` | 409 | `/billing/portal` on a Razorpay account. |
+| `no_customer` | 409 | Dodo portal without a customer id. |
+| `portal_failed` | 503 | Dodo portal session create failed. |
+| `not_subscribed` | 409 | Cancel while not on a paid plan. |
+| `use_portal` | 409 | `/billing/cancel` on Dodo. |
+| `invalid_session` | 400 | `/billing/sync` id missing `sub_` prefix or too long. |
+| `sync_failed` | 503 | Dodo retrieve failed. |
+| `session_mismatch` | 403 | Dodo subscription `user_id` ≠ caller. |
+| `invalid_checkout` | 400 | Razorpay confirm ids/signature fail format checks. |
+| `invalid_signature` | 400 | Razorpay/Dodo webhook or Checkout signature failed. |
+| `confirm_failed` | 503 | Razorpay payment fetch failed. |
+| `payment_incomplete` | 409 | Payment not captured. |
+| `subscription_mismatch` | 403 | Razorpay notes `user_id` ≠ caller. |
+| `invalid_payload` | 400 | Razorpay webhook body unusable. |
+| `apply_failed` | 500 | Webhook verified but DB apply failed. |
+
+## Generic
+
+| `error` | Status | Cause |
+|---------|--------|--------|
+| `not_found` | 404 | Unknown path, missing file, or ownership miss (outputs, styles, crop, favorites). Deliberately the same string so existence is not leaked. |

@@ -1,0 +1,67 @@
+---
+title: "Auth and billing"
+description: "Why sessions, quota, and Razorpay vs Dodo work the way they do."
+---
+
+Sign-in is Supabase Auth. Paid plans are subscriptions, not a Stripe credit ledger. How to upgrade or cancel: [Manage billing](/guides/manage-billing). Route shapes: [HTTP API](/reference/http-api).
+
+## Session
+
+1. Login, signup, or Google OAuth (PKCE in `static/auth.js`) yields an access JWT and a refresh token.
+2. Access JWT lives in a JS variable — not `localStorage`.
+3. Refresh token is cookie `af_refresh` (HttpOnly, SameSite=Strict, Secure on HTTPS).
+4. `authFetch` retries once after `POST /auth/refresh` on 401.
+5. APIs verify the access JWT with Supabase JWKS (`ES256`, audience `authenticated`).
+
+Logout calls `POST /logout` and drops the cookie. Password reset uses a recovery AMR JWT on `POST /reset-password` only.
+
+Access tokens in query strings are rejected. `/predict` will not accept them.
+
+`GET /` redirects to `/login` when `af_refresh` is missing. That is a cookie check, not JWT verification.
+
+Google on the login page can show **Google sign-in is not yet configured** if the Supabase provider is unset. Email/password remains the supported path.
+
+## Why Bearer plus Sec-Fetch-Site
+
+CSRF on cookie-authenticated POSTs is the threat. `af_refresh` is SameSite=Strict. Mutating studio routes still require `Sec-Fetch-Site` in `{same-origin, same-site, none}` so a cross-site page cannot fire `/predict` by omission of the header. Non-browser clients must send `Sec-Fetch-Site: none`.
+
+## Plans and quota
+
+| Plan | Generations / month |
+|------|---------------------|
+| Free | 5 |
+| Pro | 50 |
+| Max | 150 |
+
+List prices shown in the UI default to **$1.99 / $5.99** and **₹59 / ₹149**. Quota is a generation count in Postgres, not a processor meter.
+
+The window is an anniversary month from the first generation (`profiles.quota_anchor_at`), not a calendar month. A slot is reserved before the GPU starts and released if prep fails. Disconnect after the GPU starts still consumes the slot (cancelling on abort would amplify GPU spam).
+
+Exempt emails (`QUOTA_EXEMPT_EMAILS`) are server-side only. `GET /me/quota` never returns an exempt flag.
+
+## Gateway routing
+
+On first paid checkout:
+
+- Public IP in Indian APNIC ranges → **Razorpay** Checkout.js
+- Any other public IP → **Dodo** Checkout Session
+- Missing/private IP → Cloudflare `CF-IPCountry`, then `Accept-Language` as last resort (`-in` or `hi`)
+
+`profiles.billing_gateway` is locked after that so a travel or VPN change cannot double-bill.
+
+Razorpay plans are granted only after a **captured** payment (`/billing/razorpay/confirm` and webhooks). A created/authenticated subscription is not enough.
+
+India Razorpay users manage cancel from the in-app pricing modal. Other users use the Dodo portal (`POST /billing/portal`).
+
+## Entitlement policy
+
+- **Upgrade** (Pro → Max) applies immediately when the current subscription is active and not already set to cancel.
+- **Downgrade** keeps the higher quota until `current_period_end`.
+- **Failed renewal** (`past_due`) keeps paid quota until period end, then Free.
+- **Cancel at cycle end** blocks further upgrades until the period finishes.
+
+## Webhooks
+
+Processors POST to `/billing/webhooks/dodo` and `/billing/webhooks/razorpay`. Events are de-duplicated in `billing_events`. Configure webhook URLs in the processor dashboards; do not paste secrets into documentation.
+
+`APP_PUBLIC_ORIGIN` is required on Modal so Checkout return URLs and reset emails cannot follow a spoofed `Host` header.

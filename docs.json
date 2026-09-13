@@ -4,13 +4,44 @@
       "tab": "Documentation",
       "groups": [
         {
-          "group": "Overview",
+          "group": "Get started",
           "pages": [
             "introduction",
-            "artfloe_build_document",
-            "improvement_plan",
-            "system_architecture",
-            "the_entire_working_pipeline_written_acc_to_me"
+            "quickstart"
+          ]
+        },
+        {
+          "group": "Guides",
+          "pages": [
+            "guides/generate-via-http",
+            "guides/use-a-custom-style",
+            "guides/crop-an-export",
+            "guides/manage-billing",
+            "guides/run-locally",
+            "guides/deploy"
+          ]
+        },
+        {
+          "group": "Reference",
+          "pages": [
+            "reference/http-api",
+            "reference/errors",
+            "reference/mcp"
+          ]
+        },
+        {
+          "group": "Concepts",
+          "pages": [
+            "concepts/architecture",
+            "concepts/generation",
+            "concepts/auth-and-billing"
+          ]
+        },
+        {
+          "group": "More",
+          "pages": [
+            "troubleshooting",
+            "changelog"
           ]
         }
       ]
@@ -18,8 +49,48 @@
   ],
   "redirects": [
     {
-      "source": "/quickstart",
-      "destination": "/artfloe_build_document",
+      "source": "/architecture",
+      "destination": "/concepts/architecture",
+      "permanent": true
+    },
+    {
+      "source": "/generation",
+      "destination": "/concepts/generation",
+      "permanent": true
+    },
+    {
+      "source": "/billing",
+      "destination": "/concepts/auth-and-billing",
+      "permanent": true
+    },
+    {
+      "source": "/http-api",
+      "destination": "/reference/http-api",
+      "permanent": true
+    },
+    {
+      "source": "/api",
+      "destination": "/reference/http-api",
+      "permanent": true
+    },
+    {
+      "source": "/artfloe_build_document",
+      "destination": "/reference/http-api",
+      "permanent": true
+    },
+    {
+      "source": "/improvement_plan",
+      "destination": "/concepts/architecture",
+      "permanent": true
+    },
+    {
+      "source": "/system_architecture",
+      "destination": "/concepts/architecture",
+      "permanent": true
+    },
+    {
+      "source": "/the_entire_working_pipeline_written_acc_to_me",
+      "destination": "/concepts/generation",
       "permanent": true
     }
   ],

@@ -1,0 +1,68 @@
+---
+title: "Run locally"
+description: "Serve the ArtFloe UI on http://localhost:7860."
+---
+
+This guide runs the Flask UI on your machine. Production GPU generation still happens on Modal. Local `python app.py` can run CPU NST; expect it to be slow without CUDA.
+
+## Prerequisites
+
+- Python 3.10
+- A virtualenv
+- Working credentials for the same services production uses (Supabase at minimum; billing only if you exercise checkout)
+- Hugging Face access to `briaai/RMBG-2.0` if you run person preservation locally
+
+Do not commit secrets. Copy `.env.example` to `.env` and fill values in the environment or Modal secrets, not in git.
+
+## 1. Clone and install
+
+```bash
+git clone https://github.com/Sohan-spec/ArtFlow-CloudFlare.git
+cd ArtFlow-CloudFlare
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Windows: `.\venv\Scripts\activate`.
+
+## 2. Configure
+
+Minimum for sign-in and the studio:
+
+- `SUPABASE_URL`
+- `SUPABASE_SECRET_KEY`
+- `SUPABASE_PUBLISHABLE_KEY`
+- `FLASK_SECRET` (or `DEV_ALLOW_INSECURE_SECRET=1` for local only)
+
+Signup CAPTCHA is off unless `TURNSTILE_SECRET_KEY` is set. On Modal, missing Turnstile **disables** signup (`signup_disabled`).
+
+## 3. Start Flask
+
+```bash
+python app.py
+```
+
+Expected log: the process listens on `0.0.0.0:7860` with `threaded=True` (SSE `/predict` would otherwise block image fetches).
+
+Open [http://localhost:7860](http://localhost:7860). Success: you get `/login` or the studio, and `GET /styles` returns JSON.
+
+```bash
+curl -sS http://localhost:7860/styles | head
+```
+
+## 4. Optional: this docs site
+
+From `artfloe/`:
+
+```bash
+npm install
+npm run dev
+```
+
+Preview: [http://localhost:3040](http://localhost:3040).
+
+## Next
+
+- [Deploy](/guides/deploy) — Modal `flask_app` + `run_nst_gpu`
+- [Architecture](/concepts/architecture) — volume `commit()` / `reload()`

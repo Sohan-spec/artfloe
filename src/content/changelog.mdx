@@ -1,0 +1,92 @@
+---
+title: "Changelog"
+description: "User-visible ArtFloe changes, newest first."
+---
+
+This project is not tagged with semantic versions yet. Headings are the date the change landed. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Internal refactors are omitted.
+
+## [Unreleased]
+
+### Changed
+
+- Documentation reorganized into tutorial, how-to, reference, and concept pages.
+
+## [2026-08-28]
+
+### Changed
+
+- Checkout routing uses the connecting public IP (Indian APNIC ranges → Razorpay, otherwise Dodo). Cloudflare country is only a fallback when the IP is missing or private.
+
+## [2026-08-27]
+
+### Added
+
+- In-place upgrade from Pro to Max when the subscription is active and not set to cancel.
+- Razorpay cancel-at-period-end from the in-app pricing UI.
+- Dodo Customer Portal for invoices, plan changes, and cancel.
+
+### Changed
+
+- A scheduled cancel blocks further upgrades until the period ends.
+
+## [2026-08-16]
+
+### Added
+
+- Johnson fast-style checkpoints for catalog styles that have them, with AdaIN as the next fallback before VGG19 + L-BFGS.
+
+## [2026-08-09]
+
+### Added
+
+- Password reset (`/forgot-password`, `/reset-password`) with recovery-session JWT.
+- Monthly generation quota in Settings, enforced on `POST /predict` before GPU (Free default 5).
+- NudeNet moderation on content and style uploads; fail closed if the detector is down.
+- Per-user upload and predict rate limits.
+
+### Changed
+
+- Custom styles are per-account in Supabase Storage; public `/data/temp-styles/` URLs are disabled.
+- History and Favorites load without a GPU volume reload on every thumbnail.
+- Color grading applies the LUT to the whole image (no masked-region grade).
+
+### Fixed
+
+- Style picker crash from a duplicate `customStyles` binding.
+- Favorites list TTFB caused by importing torch on the list path.
+
+## [2026-08-08]
+
+### Added
+
+- Per-style 3D LUT color grading for catalog entries with a `.cube` file.
+- Persisted custom styles with a delete confirmation in the studio.
+
+## [2026-08-07]
+
+### Added
+
+- Smart crop (`1:1`, `4:5`, `9:16`, `16:9`) centered on the stored person box.
+- Bearer-only auth on studio APIs (no query-string tokens).
+
+## [2026-08-05]
+
+### Added
+
+- Adam restart when L-BFGS explodes or exits too early, so those runs finish instead of dying.
+
+### Changed
+
+- User uploads go to `temp-content/`; curated `content-images/` stays a named library.
+
+## [2026-08-04]
+
+### Added
+
+- History and Favorites.
+- Style catalog JSON and client blend presets (Natural / Soft blend / Artistic).
+- Client-side subject blend between a fully preserved layer and a max-blend layer.
+
+### Security
+
+- Output images require Bearer auth and an ownership row. Raw `<img src>` of an output path does not work.

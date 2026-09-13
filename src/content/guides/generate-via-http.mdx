@@ -1,0 +1,147 @@
+---
+title: "Generate via HTTP"
+description: "Sign in, upload a photo, and stream a generation from POST /predict."
+---
+
+This guide calls the same HTTP API the studio uses. You finish with a `generation_id` and an authenticated output URL.
+
+Base URL in these examples: `https://artfloe.fun`.
+
+## Prerequisites
+
+- An ArtFloe account
+- A photo under 8 MB (`jpg`, `jpeg`, `png`, `bmp`, or `webp`)
+- Remaining monthly quota
+
+Mutating studio routes require `Sec-Fetch-Site` of `same-origin`, `same-site`, or `none`. Browsers send this. `curl` must set it. `cross-site` is rejected with `invalid_origin`.
+
+Authenticated routes need `Authorization: Bearer <access_token>`. Query-string tokens are rejected.
+
+## 1. Sign in
+
+```bash
+curl -sS https://artfloe.fun/login \
+  -H 'Content-Type: application/json' \
+  -H 'Sec-Fetch-Site: none' \
+  -c cookies.txt \
+  -d '{"email":"ada@example.com","password":"correct-horse-battery"}'
+```
+
+Expected response:
+
+```json
+{
+  "access_token": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "email": "ada@example.com"
+  }
+}
+```
+
+The response also sets HttpOnly cookie `af_refresh`. Store `access_token` in memory for later requests. Wrong email/password returns `401` with `"error": "Invalid credentials"`.
+
+## 2. Upload the content photo
+
+Field name is `image`.
+
+```bash
+curl -sS https://artfloe.fun/upload_content \
+  -H 'Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  -H 'Sec-Fetch-Site: none' \
+  -F 'image=@photo.jpg'
+```
+
+Expected response:
+
+```json
+{
+  "filename": "content_a1b2c3d4_photo.jpg"
+}
+```
+
+Use that `filename` as `content_img_name`. Default upload budget is 20 per user per hour (`upload_rate_exceeded` if you exceed it).
+
+## 3. List catalog styles (optional)
+
+```bash
+curl -sS https://artfloe.fun/styles
+```
+
+Expected shape (truncated):
+
+```json
+{
+  "styles": [
+    {
+      "id": "vg_starry_night",
+      "display_name": "Starry Night",
+      "era_collection": "post_impressionism",
+      "mood_collection": "dreamy",
+      "file": "vg_starry_night.jpg",
+      "lut_path": "luts/vg_starry_night.cube",
+      "has_lut": true
+    }
+  ],
+  "era_collections": ["post_impressionism", "early_modernism", "art_nouveau", "modernism"],
+  "mood_collections": ["dreamy", "nature", "cozy"]
+}
+```
+
+`file` is the `style_img_name` you pass to `/predict`. Entries whose files are missing on the volume are omitted.
+
+## 4. Start generation
+
+`POST /predict` only. Quota is reserved before GPU work.
+
+```bash
+curl -sS -N https://artfloe.fun/predict \
+  -H 'Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  -H 'Content-Type: application/json' \
+  -H 'Sec-Fetch-Site: none' \
+  -d '{
+    "content_img_name": "content_a1b2c3d4_photo.jpg",
+    "style_img_name": "vg_starry_night.jpg",
+    "person_preserve": true
+  }'
+```
+
+The body is `text/event-stream`. Frames look like:
+
+```
+data: {"log": "Starting neural style transfer..."}
+
+data: {"progress": 12, "status": "processing", "log": "iteration : 70 ..."}
+
+data: {"progress": 100, "status": "done", "url": "/data/output-images/All_a1b2c3d4_content_a1b2c3d4_photo_vg_starry_night/0600.jpg", "generation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6", "dir_name": "All_a1b2c3d4_content_a1b2c3d4_photo_vg_starry_night", "url_blend": "/data/output-images/All_a1b2c3d4_content_a1b2c3d4_photo_vg_starry_night/0600_blend.jpg", "person_detected": true}
+```
+
+`person_preserve` defaults to true. Send `"false"` (string or boolean) to stylize people too. The studio never sends this field, so studio runs always preserve.
+
+`dir_name` is `All_<8 hex of user id>_<content stem>_<style stem>`. The file in `url` is a 4-digit frame id such as `0600.jpg`, not a stable pretty name.
+
+`GET /predict` returns `405` `method_not_allowed`.
+
+## 5. Fetch the output
+
+Output paths are not public. Fetch with the same Bearer token and display as a blob URL.
+
+```bash
+curl -sS https://artfloe.fun/data/output-images/All_a1b2c3d4_content_a1b2c3d4_photo_vg_starry_night/0600.jpg \
+  -H 'Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  -o result.jpg
+```
+
+A path you do not own returns `404` `not_found`.
+
+## Common failures
+
+| You see | Fix |
+|---------|-----|
+| `quota_exceeded` (429) | Wait for `reset_at`, or [upgrade](/guides/manage-billing). |
+| `content_not_found` (404) | Re-upload; temp content can disappear after a volume wipe. |
+| `predict_rate_exceeded` (429) | Default 10 `/predict` calls per user per hour. |
+| `invalid_origin` (403) | Send `Sec-Fetch-Site: none` (or same-origin in the browser). |
+| `missing_token` (401) | Add `Authorization: Bearer`. |
+
+Full list: [Error codes](/reference/errors). Engine order: [How generation works](/concepts/generation).

@@ -1,0 +1,54 @@
+---
+title: "Quick start"
+description: "By the end of this page you will have a restyled photo on artfloe.fun."
+---
+
+By the end of this page you will have a restyled photo on [artfloe.fun](https://artfloe.fun).
+
+## Prerequisites
+
+- A photo on your device (JPEG, PNG, BMP, or WebP, under 8 MB)
+- An email address you can sign in with
+
+## 1. Open the studio
+
+Go to [https://artfloe.fun](https://artfloe.fun). If you are not signed in, the app redirects you to `/login`.
+
+## 2. Create an account
+
+1. Enter email and password (at least 8 characters).
+2. Complete the CAPTCHA if the page shows one.
+3. Submit. You land in the studio.
+
+Email/password is the path this page uses. The login screen may also offer Google; if that button reports it is not configured, use email.
+
+## 3. Upload a photo
+
+1. Drag a photo onto **Drag & Drop to Upload Content Image**, or click **Choose File**.
+2. Wait until a preview appears in the card.
+
+Uploads are checked with NudeNet before they are stored. A rejected photo does not start GPU work.
+
+## 4. Pick a style
+
+Under **Choose a Style**, click a catalog thumbnail (for example **Starry Night**). You can switch the list between **All** and **By mood**.
+
+## 5. Run Transform
+
+1. Click **Transform**.
+2. Watch the overlay until it shows the result.
+
+Success: you see a restyled image. If people were detected, **Subject blend** appears so you can mix a little style onto the preserved person (0–15%). **Original** crop stays selected unless you change it.
+
+A generation uses one slot of your monthly quota (Free 5, Pro 50, Max 150). The count is reserved before GPU work starts.
+
+## 6. Save or crop (optional)
+
+- **1:1**, **4:5**, **9:16**, or **16:9** in the result overlay crop the export around the stored subject box.
+- **History** and **Favorites** in the profile menu reopen past generations.
+
+## Next steps
+
+- [Generate via HTTP](/guides/generate-via-http) — same pipeline from `curl`
+- [Use a custom style](/guides/use-a-custom-style) — upload your own reference image
+- [Run locally](/guides/run-locally) — Flask UI on port 7860

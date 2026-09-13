@@ -60,4 +60,36 @@ upgrade an existing site or move a production release pointer.
 
 ## Product context
 
-<!-- Add canonical terminology, audience details, and content boundaries here. -->
+ArtFloe is the product. The app repo is ArtFlow-CloudFlare (Flask + Modal GPU).
+This folder is the public docs site only.
+
+Document what the code does now. Do not describe Stripe, Clerk, SAM 3,
+Real-ESRGAN upscale, or GET `/predict` as shipped. Do not copy secret values
+into pages. Env *names* may appear in operator guides (`guides/run-locally`,
+`guides/deploy`) when the reader must set them; never paste values.
+
+### Canonical terms (use these everywhere)
+
+| Concept | Term |
+|---------|------|
+| Built-in look | catalog style |
+| User-uploaded look | custom style |
+| One `/predict` run | generation |
+| Monthly count | quota (not credits) |
+| Keeping people photoreal | person preservation |
+| Browser mix of preserve layers | subject blend |
+| Razorpay or Dodo | gateway |
+| Plans | Free / Pro / Max (`plan_tier`: `free` / `pro` / `max`) |
+
+Pages live under Diátaxis folders: `quickstart` (tutorial), `guides/` (how-to),
+`reference/` (facts), `concepts/` (why). Do not mix those types on one page.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

@@ -1,0 +1,61 @@
+---
+title: "Crop an export"
+description: "Smart-crop a finished generation to 1:1, 4:5, 9:16, or 16:9."
+---
+
+Smart crop writes a new file next to the original output. It does not replace the uncropped JPEG. The window is centered on the stored person box when one exists; otherwise it uses the image center. There is no model at crop time.
+
+Allowed `ratio_key` values:
+
+| `ratio_key` | Label in the UI |
+|-------------|-----------------|
+| `square_1_1` | 1:1 |
+| `portrait_4_5` | 4:5 |
+| `story_9_16` | 9:16 |
+| `wallpaper_16_9` | 16:9 |
+
+## In the studio
+
+1. Finish a generation so the result overlay is open.
+2. Click **1:1**, **4:5**, **9:16**, or **16:9**.
+3. **Original** shows the uncropped file again.
+
+The overlay also has **Subject blend** (person layer mix) and, when LUTs exist, a color-grade control. Those are separate from crop.
+
+## Via HTTP
+
+You need a `generation_id` from a completed `/predict` (or from `GET /history`).
+
+```bash
+curl -sS -X POST \
+  https://artfloe.fun/crop/3fa85f64-5717-4562-b3fc-2c963f66afa6/square_1_1 \
+  -H 'Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  -H 'Sec-Fetch-Site: none'
+```
+
+Expected response:
+
+```json
+{
+  "generation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "ratio_key": "square_1_1",
+  "ratio_label": "1:1",
+  "person_bbox": [120, 40, 510, 720],
+  "url": "/data/output-images/All_a1b2c3d4_content_a1b2c3d4_photo_vg_starry_night/0600_crop_square_1_1.jpg",
+  "url_blend": "/data/output-images/All_a1b2c3d4_content_a1b2c3d4_photo_vg_starry_night/0600_blend_crop_square_1_1.jpg"
+}
+```
+
+`url_blend` is present only when the generation wrote a `*_blend.jpg` sidecar. Fetch both URLs with Bearer auth, same as other outputs.
+
+## Failures
+
+| You see | Cause |
+|---------|--------|
+| `invalid_ratio` (400) | `ratio_key` is not one of the four keys. Body includes `allowed`. |
+| `invalid_generation_id` (400) | Path segment is not a UUID. |
+| `not_found` (404) | Generation is missing or owned by someone else. |
+| `missing_output` / `output_dir_missing` / `output_image_not_found` (404) | Files are gone from the volume. Re-run `/predict`. |
+| `crop_failed` (500) | Decode or write failed on the primary JPEG. |
+
+How the box is chosen: [How generation works](/concepts/generation).

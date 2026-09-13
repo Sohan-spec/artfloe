@@ -1,0 +1,59 @@
+---
+title: "Deploy"
+description: "Deploy the Flask WSGI app and A10G GPU worker to Modal."
+---
+
+Production is Modal. The app name is `neural-style-transfer`. The web entry is WSGI `flask_app`. GPU work is `run_nst_gpu` (`gpu="A10G"`, 1200s timeout). Both mount volume `nst-data-vol` at `/data`.
+
+There is no in-repo Cloudflare Worker for the app. Point `artfloe.fun` at the Modal WSGI URL (DNS or a generic proxy).
+
+## Prerequisites
+
+- A Modal account
+- Secrets already created in Modal (Supabase, Hugging Face `hf-secret` on the GPU function, billing if you take payments)
+- Hugging Face access to `briaai/RMBG-2.0` (loaded at **runtime** on the GPU, not at image build)
+
+## 1. Authenticate Modal
+
+```bash
+python -m modal setup
+```
+
+## 2. Deploy
+
+From the app repo root:
+
+```bash
+python -m modal deploy modal_app.py
+```
+
+Success: Modal prints a `*.modal.run` URL for `flask_app`.
+
+## 3. Point the domain
+
+Set `artfloe.fun` at that URL. Set `APP_PUBLIC_ORIGIN=https://artfloe.fun` so password-reset links and Dodo return URLs are not minted from a spoofable `Host` header. On Modal, missing `APP_PUBLIC_ORIGIN` makes checkout fail closed.
+
+Allow `https://artfloe.fun/reset-password` in Supabase Auth redirect URLs.
+
+## 4. Webhooks
+
+In each processor dashboard, point events at:
+
+- `POST /billing/webhooks/dodo`
+- `POST /billing/webhooks/razorpay`
+
+Do not put webhook secrets in documentation or git.
+
+## 5. Check the live app
+
+1. Open the Modal URL or `https://artfloe.fun`.
+2. Sign in.
+3. Run one generation.
+
+Success: SSE reaches `status: "done"` and the JPEG loads from `/data/output-images/...` with Bearer auth.
+
+GPU concurrency default is 4 (`MAX_CONCURRENT_GPU_JOBS`). In-app rate limiters are per container; Cloudflare rules on `/login`, `/signup`, and `/predict` are the cross-container curb.
+
+## Docs site
+
+The Thally project in `artfloe/` deploys separately (Cloudflare). It is not the ArtFloe Flask app.

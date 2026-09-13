@@ -1,0 +1,64 @@
+---
+title: "How generation works"
+description: "Engine order, person preservation, and what the GPU writes."
+---
+
+A generation is `POST /predict` plus GPU work in `neural_style_transfer.py`. Person preservation is on unless the client sends `person_preserve: false`. The studio never sends that field, so studio runs always preserve.
+
+## Engine order
+
+`use_fast_style` defaults to true. Request height is 400 for VGG; feed-forward paths bump it to 768 (`fast_style_height`).
+
+1. **Johnson fast style** (`utils/fast_style.py`) when the catalog style has a `.pth` transformer checkpoint.
+2. **AdaIN** (`utils/adain_style.py`) when Johnson is missing and AdaIN weights exist.
+3. **VGG19 + L-BFGS** (`models/definitions/vgg_nets.py`) otherwise.
+
+Fast paths skip the 600-iteration optimizer. They still run person detection and compositing when preserve is on.
+
+Custom styles typically fall through to AdaIN or VGG, because Johnson checkpoints are keyed to catalog files.
+
+## VGG19 path
+
+Images are read with OpenCV (BGR), converted to RGB, resized, then packed as a batch tensor `[1, C, H, W]` with ImageNet mean subtraction (`utils/utils.py` `prepare_image`).
+
+VGG19 blocks: conv + ReLU + max-pool. Content features come from `conv4_2`. Style features come from `relu1_1` … `relu5_1`. Style loss uses Gram matrices:
+
+$$
+\mathcal\{G\}_\{ij\}^l = \frac\{1\}\{C_l \cdot H_l \cdot W_l\} \sum_k F_\{ik\}^l F_\{jk\}^l
+$$
+
+Total variation penalizes neighboring pixel jumps. Combined loss:
+
+$$
+\mathcal\{L\}_\{total\} = \alpha \mathcal\{L\}_\{content\} + \beta \mathcal\{L\}_\{style\} + \gamma \mathcal\{L\}_\{TV\}
+$$
+
+Defaults: $\alpha = 10^5$, $\beta = 300$, $\gamma = 1.0$. Optimizer is L-BFGS (`lr=1.0`, typically 600 iterations, env `MAX_GPU_ITERATIONS`). If gradients explode or L-BFGS exits too early (fewer than 151 closures), the run restarts with Adam (1000 steps, `lr=1.0`).
+
+SSE logs every 5 iterations (`sse_log_every`). Video export is off (`generate_video: false`).
+
+## Person preservation
+
+Implemented in `utils/segmentation.py`. Not SAM.
+
+1. **Faster R-CNN ResNet50-FPN** — COCO person class, score `> 0.7`.
+2. **RMBG-2.0 (BiRefNet)** — saliency at 1024×1024, sigmoid on logits, resize to original `H×W`.
+3. **Box gate** — mask is multiplied by padded person boxes so chairs and statues are not treated as people.
+4. **Feather** — Gaussian blur, radius 21.
+5. **Composite** — GPU writes a fully preserved layer (`url` in SSE) and a max-blend layer (~15% stylize on the subject, `url_blend`).
+
+The studio slider mixes those two in the browser. Do not send `subject_blend_strength` to `/predict`; the server does not apply it.
+
+RMBG-2.0 is gated on Hugging Face. The GPU function loads it at **runtime** with Modal secret `hf-secret`. Build-time `run_commands` cannot see that secret.
+
+If no person is found, the result is fully stylized and the blend UI stays hidden.
+
+## Color grading and crop
+
+Optional 3D LUT grading lives in `utils/color_grading.py`. Catalog entries with a resolvable `.cube` expose `has_lut` on `GET /styles`. The GPU may write `*_grade.jpg` sidecars; the studio toggles them client-side.
+
+Smart crop is a separate `POST /crop/<generation_id>/<ratio_key>` after the generation exists. Keys: `square_1_1`, `portrait_4_5`, `story_9_16`, `wallpaper_16_9`. It uses the stored subject box when present. See [Crop an export](/guides/crop-an-export).
+
+## What this is not
+
+Arbitrary-object prompts (SAM 3) and Real-ESRGAN upscale are not in the runtime path. `GET /predict` is rejected.

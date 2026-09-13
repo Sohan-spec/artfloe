@@ -162,10 +162,10 @@ const brandPreset: BrandPresetKey = 'primary'
 export const siteConfig: SiteConfig = {
   name: 'ArtFloe',
   description:
-    'Technical documentation for ArtFloe — neural style transfer with person preservation.',
+    'ArtFloe restyles a photo in the look of a painting while keeping people looking like themselves.',
   repoUrl: 'https://github.com/Sohan-spec/artfloe',
   links: [
-    { label: 'Get started', href: '/artfloe_build_document' },
+    { label: 'Get started', href: '/quickstart' },
     { label: 'App repo', href: 'https://github.com/Sohan-spec/ArtFlow-CloudFlare' },
   ],
   brand: brandPresets[brandPreset],

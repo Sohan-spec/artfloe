@@ -1,0 +1,38 @@
+---
+title: "Docs MCP"
+description: "Read-only MCP tools on the ArtFloe documentation site."
+---
+
+ArtFloe the product does not expose an MCP server. The **documentation site** does: a read-only MCP endpoint so coding agents can search and fetch these pages.
+
+ArtFloe HTTP generation stays on the Flask API: [Generate via HTTP](/guides/generate-via-http).
+
+## Endpoint
+
+`/api/mcp` on this docs site. Discovery files the site also serves:
+
+| Path | Role |
+|------|------|
+| `/llms.txt` | Link index of docs pages |
+| `/llms-full.txt` | Concatenated Markdown of every page |
+| `/AGENTS.md` | How to edit this docs project |
+| `?format=md` on a page URL | Clean Markdown for that page |
+
+`docs.json` sets `"markdown": { "enabled": true }`, so each page is available as Markdown without nav chrome.
+
+## Tools
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `search_docs` | `query` (string, required), `limit` (number, default 8, max 25) | Ranked title, URL, snippet |
+| `read_page` | `pageId` (string, required) | Full Markdown for a known page id or slug |
+| `list_pages` | none | Every page id, title, and URL |
+| `agent_readiness` | none | Published agent-readiness score for the site |
+
+`read_page` only resolves ids from `list_pages`. Unknown ids are not treated as filesystem paths.
+
+The endpoint is anonymous and rate-limited. It is full-text search, not embeddings-per-request.
+
+## What not to call
+
+`/api/chat`, `/api/feedback`, and `/api/try-it` are not MCP tools. Do not use them as a substitute for `search_docs` / `read_page`.

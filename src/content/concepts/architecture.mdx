@@ -1,0 +1,86 @@
+---
+title: "Architecture"
+description: "How Flask, Modal GPU, Supabase, and billing fit together."
+---
+
+ArtFloe is a Flask SPA on Modal. Style transfer runs on a separate A10G function. Accounts and quota live in Supabase. Paid plans use Razorpay or Dodo.
+
+The app repo is [ArtFlow-CloudFlare](https://github.com/Sohan-spec/ArtFlow-CloudFlare). This `artfloe/` folder is only the docs site.
+
+## Tiers
+
+| Tier | What it is | Where it runs |
+|------|------------|----------------|
+| Browser | `static/` (studio, SSE client, pricing, gallery) | User's browser |
+| Control | Flask routes in `app.py` | Modal WSGI `flask_app` |
+| Compute | `run_nst_gpu` | Modal A10G, 1200s timeout |
+| Files | Shared POSIX volume `nst-data-vol` | `/data` on both containers |
+| Auth / SQL | Supabase Auth JWTs + Postgres | Supabase |
+| Custom styles | Bucket `style-uploads` | Supabase Storage |
+| Payments | Subscriptions | Razorpay (public Indian IP) or Dodo (other) |
+
+There is no application Cloudflare Worker in the app repo. DNS or a generic proxy can sit in front of Modal. Do not confuse this docs Worker with the product.
+
+```
+Browser ──HTTPS──► Flask (Modal WSGI)
+                      │
+                      ├──► Supabase (JWT, profiles, generations)
+                      ├──► Dodo or Razorpay
+                      └──► run_nst_gpu (A10G) ──► /data (nst-data-vol)
+```
+
+## Generation lifecycle
+
+1. User signs in. Access JWT stays in memory (`static/auth.js`). Refresh token is cookie `af_refresh`.
+2. `POST /upload_content` stores the photo under `/data/temp-content/` after NudeNet.
+3. User picks a catalog style or `POST /upload_style`.
+4. `POST /predict` with Bearer JWT. Flask reserves a quota row **before** GPU work.
+5. Flask materializes temp/custom styles onto `/data/style-images/`, then `commit()`s.
+6. `run_nst_gpu.remote_gen(config)` streams logs; Flask turns them into SSE.
+7. GPU `reload()`s the volume, writes `/data/output-images/<user-dir>/`, `commit()`s.
+8. Browser loads the JPEG from `/data/output-images/...` with Bearer auth.
+
+`GET /predict` is not allowed. Tokens in query strings are not allowed.
+
+Flask drops request context before a streaming response is consumed. Read body, user id, and flags into locals **before** the generator, then wrap with `stream_with_context`.
+
+## Volume paths
+
+| Path | Role |
+|------|------|
+| `/data/content-images` | Named / curated content |
+| `/data/temp-content` | User content uploads |
+| `/data/style-images` | Catalog + materialized styles |
+| `/data/temp-styles` | Transient style uploads (legacy copy path) |
+| `/data/output-images` | Per-user outputs |
+
+Cross-container reads need `commit()` then `reload()`. Content and outputs stay on the volume; they are not copied to Storage at runtime. Custom styles are.
+
+## Database tables in use
+
+`profiles` (plan + gateway + period), `generations`, `favorites`, `custom_styles`, `moderation_log`, `billing_events`. RPCs: `get_generation_quota`, `reserve_generation_quota`.
+
+## Auth in one paragraph
+
+Access tokens are Supabase JWTs, verified via JWKS (`ES256`, audience `authenticated`) in `auth/verify.py`. Details and billing policy: [Auth and billing](/concepts/auth-and-billing).
+
+## Quota in one paragraph
+
+Free **5**, Pro **50**, Max **150** generations per month. Reservation is atomic in Postgres. If file prep fails after reserve, the slot is cancelled. A client disconnect after the GPU starts still consumes quota.
+
+## Why the GPU and web worker are separate
+
+NST needs an A10G for tens of seconds to minutes. The WSGI container stays up to stream SSE and serve the UI. The shared volume is the hand-off. Visibility lag is why Flask retries directory listing after `done` (up to 10 seconds).
+
+## Not shipped
+
+Stripe, Clerk, SAM 3, Real-ESRGAN `/upscale`, GET `/predict`, server-side `subject_blend_strength` (the client blends two GPU layers instead).
+
+## Operational gotchas
+
+1. Volume visibility requires `commit()` then `reload()` across containers.
+2. RMBG-2.0 logits need `sigmoid`; do not treat them like RMBG-1.4 nested lists.
+3. Hugging Face auth for RMBG is a **runtime** Modal secret on the GPU function, not available at image build.
+4. Max upload size is 8 MB.
+5. Predict is origin-checked (`Sec-Fetch-Site`) and rate-limited per user.
+6. In-memory rate limiters are per container. Cloudflare rules are the cross-container curb.

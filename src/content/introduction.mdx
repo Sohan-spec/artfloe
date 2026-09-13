@@ -1,29 +1,55 @@
 ---
-title: "ArtFloe Docs"
-description: "Technical documentation for ArtFloe — neural style transfer with person preservation."
+title: "ArtFloe docs"
+description: "Restyle a photo in the look of a painting while keeping people looking like themselves."
 mode: home
 ---
 
 <Hero
   title="ArtFloe documentation"
-  subtitle="Architecture, build specs, and pipeline notes for the ArtFloe app — Modal, Flask, GPU style transfer, and billing."
-  primaryLabel="Build document"
-  primaryHref="/artfloe_build_document"
-  secondaryLabel="System architecture"
-  secondaryHref="/system_architecture"
+  subtitle="ArtFloe restyles a photo in the look of a painting. Detected people stay photoreal unless you turn preservation off on the API. The studio is a Flask app on Modal; GPU work runs on an A10G."
+  primaryLabel="Quick start"
+  primaryHref="/quickstart"
+  secondaryLabel="HTTP API"
+  secondaryHref="/reference/http-api"
 />
 
 <CardGroup cols={2}>
-  <Card title="Build document" href="/artfloe_build_document" arrow>
-    Implementation-ready spec for every approved feature.
+  <Card title="Quick start" href="/quickstart" arrow>
+    Restyle a photo on artfloe.fun in a few minutes.
   </Card>
-  <Card title="Improvement plan" href="/improvement_plan" arrow>
-    Commercialization roadmap, model choices, and phased rollout.
+  <Card title="Generate via HTTP" href="/guides/generate-via-http" arrow>
+    Upload a photo, call POST /predict, and read the SSE result.
   </Card>
-  <Card title="System architecture" href="/system_architecture" arrow>
-    Modal, Flask, GPU pipeline, and infrastructure overview.
+  <Card title="HTTP API" href="/reference/http-api" arrow>
+    Every route the studio uses: params, responses, auth.
   </Card>
-  <Card title="NST pipeline notes" href="/the_entire_working_pipeline_written_acc_to_me" arrow>
-    Step-by-step notes on the VGG19 style transfer optimization loop.
+  <Card title="Error codes" href="/reference/errors" arrow>
+    Status codes and error strings the server actually returns.
+  </Card>
+  <Card title="How generation works" href="/concepts/generation" arrow>
+    Fast style, AdaIN, VGG19 + L-BFGS, and person preservation.
+  </Card>
+  <Card title="Architecture" href="/concepts/architecture" arrow>
+    Flask, Modal GPU, volume storage, Supabase, and billing.
   </Card>
 </CardGroup>
+
+## What this site covers
+
+These pages document the live ArtFloe app at [artfloe.fun](https://artfloe.fun) and the HTTP API that studio uses. The app repo is [ArtFlow-CloudFlare](https://github.com/Sohan-spec/ArtFlow-CloudFlare). This `artfloe/` folder is the docs site only.
+
+## Terminology
+
+| Term | Meaning |
+|------|---------|
+| **Catalog style** | A built-in look from `data/style-catalog.json`, served as a file under `/data/style-images/`. |
+| **Custom style** | A style you upload. Stored in Supabase Storage bucket `style-uploads` and named `custom_<uuid>.<ext>` for `/predict`. |
+| **Generation** | One `POST /predict` run. Counts against monthly quota. |
+| **Person preservation** | Faster R-CNN person boxes + RMBG-2.0 mask, then a composite that keeps people photoreal. Default on. |
+| **Subject blend** | Browser mix between the fully preserved layer and a lightly stylized person layer. Not a `/predict` field. |
+| **Quota** | Monthly generation count: Free 5, Pro 50, Max 150. Not a credit wallet. |
+| **Gateway** | Razorpay (public Indian IP) or Dodo (everywhere else). Locked after first paid checkout. |
+
+## Not shipped
+
+Do not treat these as live features: Stripe, Clerk, SAM 3 / arbitrary-object preserve, Real-ESRGAN `/upscale`, credit wallets, or `GET /predict`.

@@ -1,0 +1,114 @@
+---
+title: "Troubleshooting"
+description: "Symptom, cause, and fix for failures the ArtFloe server actually returns."
+---
+
+Each entry is a real error string or UI symptom from the Flask app, not a generic FAQ. HTTP catalog: [Error codes](/reference/errors).
+
+## Transform never starts — `quota_exceeded`
+
+**Symptom:** `429` body `"error": "quota_exceeded"` and a message like `Monthly generation limit reached (5/5). Your quota resets on ...`. Settings shows remaining 0.
+
+**Cause:** Postgres reserved every slot for this anniversary month.
+
+**Fix:** Wait until `reset_at`, or [upgrade](/guides/manage-billing). Free is 5, Pro 50, Max 150.
+
+## Transform never starts — `content_not_found`
+
+**Symptom:** `404` `"error": "content_not_found"` — `Content image is no longer available on the server. Please re-select your photo and try again.`
+
+**Cause:** `content_*` file is gone from `/data/temp-content/` (volume wipe, stale filename in the client).
+
+**Fix:** Re-upload the photo, then call `/predict` with the new `filename`.
+
+## Overlay dies with `Modal GPU execution failed`
+
+**Symptom:** SSE `{ "error": "Modal GPU execution failed: ..." }`.
+
+**Cause:** `run_nst_gpu` raised (CUDA, missing weights, RMBG download, NaN path that still escaped).
+
+**Fix:** Retry once. If it persists, check Modal GPU logs and Hugging Face access to `briaai/RMBG-2.0` on secret `hf-secret`. L-BFGS explosions are supposed to restart with Adam; a remaining failure is not that fallback.
+
+## Result overlay empty — registration failed
+
+**Symptom:** SSE error `Style transfer finished, but the result could not be registered for preview. Please try again.`
+
+**Cause:** GPU wrote files, but completing the `generations` row failed. Preview URLs are refused without an ownership row.
+
+**Fix:** Retry Transform. The failed attempt may still have consumed quota.
+
+## `invalid_origin` on curl
+
+**Symptom:** `403` `"error": "invalid_origin"`.
+
+**Cause:** Missing or `cross-site` `Sec-Fetch-Site`. The check fails closed when the header is absent.
+
+**Fix:** Browsers send it on same-origin XHR. For `curl`, add `-H 'Sec-Fetch-Site: none'`.
+
+## `missing_token` / preview images broken
+
+**Symptom:** `401` `"error": "missing_token"` on `/predict` or `/data/output-images/...`. `<img src>` of an output URL shows JSON.
+
+**Cause:** Outputs require `Authorization: Bearer`. They are not world-readable. The studio uses `authFetch` + blob URLs.
+
+**Fix:** Send the access token. Refresh via `POST /auth/refresh` if you have `token_expired`.
+
+## Upload rejected — `content_rejected` or `Invalid image format`
+
+**Symptom:** `422` `content_rejected`, or `400` `Invalid image format`.
+
+**Cause:** NudeNet flagged the bytes, or the file failed magic-byte / 4096 px / 16M pixel checks. Extensions alone are not enough.
+
+**Fix:** Use a real JPEG/PNG/BMP/WebP under 8 MB and 4096 px. If NudeNet is down you get `422` `moderation_unavailable` instead — retry later (fail closed, nothing stored).
+
+## `upload_rate_exceeded` / `predict_rate_exceeded`
+
+**Symptom:** `429` with those codes.
+
+**Cause:** Default 20 uploads / user / hour / endpoint, and 10 `/predict` / user / hour. Limiters are in-memory per container.
+
+**Fix:** Wait for the window (`UPLOAD_RATE_WINDOW_SECONDS` / `PREDICT_RATE_WINDOW_SECONDS`, default 3600). Cloudflare rules may also 429 separately.
+
+## Signup returns `signup_disabled`
+
+**Symptom:** `503` `"error": "signup_disabled"`.
+
+**Cause:** Modal (`IS_MODAL=1`) without `TURNSTILE_SECRET_KEY`. Signup is fail-closed.
+
+**Fix:** Set Turnstile on the Modal web secret. Locally, unset secret leaves CAPTCHA off.
+
+## Checkout — `already_on_plan` / `cancel_pending` / `payment_incomplete`
+
+**Symptom:** `409` on `/billing/checkout` or `/billing/razorpay/confirm`.
+
+**Cause:**
+
+- `already_on_plan` — you already have that paid plan.
+- `cancel_pending` — cancel-at-period-end is set; upgrades are blocked until the period finishes.
+- `payment_incomplete` — Razorpay payment is not captured yet.
+
+**Fix:** Use **Manage billing** for downgrades. For Razorpay, wait for capture then confirm again. For cancel-pending, wait until `current_period_end`.
+
+## Dodo paid but Settings still says Free
+
+**Symptom:** Checkout returned, `GET /billing/status` still `plan: "free"`.
+
+**Cause:** Webhook delayed or `APP_PUBLIC_ORIGIN` wrong so return/sync never lined up.
+
+**Fix:** `POST /billing/sync` with the Dodo `subscription_id` (`sub_...`). Confirm webhook URL is `/billing/webhooks/dodo` and `APP_PUBLIC_ORIGIN` is `https://artfloe.fun`.
+
+## Custom style 404 on `/predict`
+
+**Symptom:** `Custom style not found or access denied`.
+
+**Cause:** `style_img_name` is not your `custom_<uuid>.<ext>`, or Storage download failed.
+
+**Fix:** `GET /custom_styles` and use the returned `filename`. Do not use another account's id.
+
+## Local UI loads but generation is extremely slow
+
+**Symptom:** `/predict` streams for a long time on `python app.py` without Modal.
+
+**Cause:** Local path shells `neural_style_transfer.py` on CPU unless you have CUDA. Production uses `run_nst_gpu` on A10G.
+
+**Fix:** [Deploy](/guides/deploy) for real GPU jobs. Local Flask is for UI and API wiring.

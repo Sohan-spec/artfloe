@@ -1,0 +1,407 @@
+---
+title: "HTTP API"
+description: "Routes the ArtFloe studio uses. Auth is Bearer JWT unless noted."
+---
+
+ArtFloe does not ship a separate public SDK. The studio and any HTTP client share these routes.
+
+## Conventions
+
+| Rule | Value |
+|------|--------|
+| Auth | `Authorization: Bearer <access_token>` on signed-in routes. No query-string tokens. |
+| JSON body | `Content-Type: application/json` except multipart uploads (`image` file field). |
+| Origin | Mutating studio routes require `Sec-Fetch-Site` ∈ `same-origin`, `same-site`, `none`. |
+| Max body | 8 MB (`MAX_CONTENT_LENGTH`). Oversized bodies: `413` `file_too_large`. |
+| JWT | Supabase ES256, audience `authenticated`, issuer `{SUPABASE_URL}/auth/v1`. |
+
+Access token lives in JS memory. Refresh token is cookie `af_refresh` (HttpOnly, SameSite=Strict, Secure on HTTPS). Recovery JWTs (`amr` method `recovery`) work only on `POST /reset-password`; elsewhere they return `recovery_token_not_allowed`.
+
+Error catalog: [Error codes](/reference/errors). Session design: [Auth and billing](/concepts/auth-and-billing).
+
+## Auth and pages
+
+### `GET /`
+
+Studio HTML. If cookie `af_refresh` is missing, `302` to `/login`.
+
+### `GET /login`
+
+Login HTML.
+
+### `GET /auth/config`
+
+Public client bootstrap. Prefer the `data-auth-config` element on HTML pages.
+
+| Field | Type | Notes |
+|-------|------|--------|
+| `supabase_url` | string | Project URL |
+| `supabase_publishable_key` | string | Publishable / anon key |
+| `turnstile_site_key` | string | Empty when Turnstile is unset |
+
+### `POST /signup`
+
+Body:
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `email` | string | yes | |
+| `password` | string | yes | 8–128 characters |
+| `captcha_token` | string | if Turnstile is enforced | Missing/invalid CAPTCHA returns generic `Signup failed. Please try again.` |
+
+On Modal, missing Turnstile secret returns `503` `signup_disabled`. Rate limit: 5 attempts / 15 minutes / IP.
+
+```json
+{
+  "access_token": "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {"id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890", "email": "ada@example.com"}
+}
+```
+
+Sets `af_refresh`.
+
+### `POST /login`
+
+Same email/password body (no captcha). `401` `Invalid credentials` on failure, including unconfirmed-email paths that cannot be auto-confirmed. Rate limit: 5 / 15 minutes / IP. Response shape matches signup.
+
+### `POST /forgot-password`
+
+| Field | Type | Required |
+|-------|------|----------|
+| `email` | string | yes |
+| `captcha_token` | string | if Turnstile is enforced |
+
+Always returns the same 200 body when the request is well-formed (no account enumeration), including when the email is unknown or Supabase errors. On Modal without Turnstile: `503` `reset_disabled`. Per IP+email: 3 / hour, still the generic 200.
+
+```json
+{
+  "ok": true,
+  "message": "If an account exists for that email, we sent a password reset link. Check your inbox and spam folder."
+}
+```
+
+### `GET /reset-password`
+
+Reset HTML.
+
+### `POST /reset-password`
+
+Requires a recovery-session Bearer JWT. Body: `{ "password": "..." }` (8–128). Success: `{ "ok": true, "message": "Password updated. You can sign in with your new password." }` and the refresh cookie is cleared.
+
+### `POST /auth/refresh`
+
+Uses cookie `af_refresh`. Returns `{ "access_token": "..." }` and rotates the cookie. Missing cookie: `401` `no_refresh_token`.
+
+### `POST /auth/session`
+
+Establish `af_refresh` from a one-time body `{ "access_token", "refresh_token" }` (OAuth PKCE return). If the cookie already exists: `409` `session_already_exists`. Rate limit: 30 / 15 minutes / IP.
+
+### `POST /logout`
+
+`{ "ok": true }`. Clears `af_refresh`.
+
+## Catalog
+
+### `GET /styles`
+
+No auth. Only catalog entries whose files exist on the style-images volume.
+
+```json
+{
+  "styles": [
+    {
+      "id": "vg_starry_night",
+      "display_name": "Starry Night",
+      "era_collection": "post_impressionism",
+      "mood_collection": "dreamy",
+      "file": "vg_starry_night.jpg",
+      "lut_path": "luts/vg_starry_night.cube",
+      "has_lut": true
+    }
+  ],
+  "era_collections": ["post_impressionism", "early_modernism", "art_nouveau", "modernism"],
+  "mood_collections": ["dreamy", "nature", "cozy", "dramatic", "expressive", "tropical", "bold", "elegant", "playful", "vibrant", "dynamic"]
+}
+```
+
+`lut_path` is omitted when the `.cube` file is missing. `has_lut` is always present.
+
+### `GET /presets`
+
+Client blend presets. `subject_blend_strength` seeds the **studio slider only**; it is not a `/predict` field.
+
+```json
+{
+  "natural": {"label": "Natural", "subject_blend_strength": 0.0},
+  "soft": {"label": "Soft blend", "subject_blend_strength": 0.05},
+  "artistic": {"label": "Artistic", "subject_blend_strength": 0.1}
+}
+```
+
+### `GET /data/style-images/<filename>`
+
+Catalog style image bytes. Missing file: `404` `not_found`.
+
+## Uploads and custom styles
+
+Allowed extensions: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp`. Magic-byte validation plus 4096 px / 16M pixel cap.
+
+Default upload rate: 20 / user / hour / endpoint (`UPLOAD_RATE_LIMIT`).
+
+### `POST /upload_content`
+
+Multipart field `image`. NudeNet before disk write. Stored under `/data/temp-content/` as `content_<8 hex>_<safe_name>`.
+
+```json
+{"filename": "content_a1b2c3d4_photo.jpg"}
+```
+
+### `POST /upload_style`
+
+Multipart field `image`. Persists Storage + `custom_styles`. Default 100 per account.
+
+```json
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "filename": "custom_3fa85f64-5717-4562-b3fc-2c963f66afa6.jpg",
+  "display_name": "my painting",
+  "url": "/custom_styles/3fa85f64-5717-4562-b3fc-2c963f66afa6/image"
+}
+```
+
+### `GET /custom_styles`
+
+```json
+{
+  "styles": [
+    {
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "filename": "custom_3fa85f64-5717-4562-b3fc-2c963f66afa6.jpg",
+      "display_name": "my painting",
+      "url": "/custom_styles/3fa85f64-5717-4562-b3fc-2c963f66afa6/image",
+      "created_at": "2026-09-13T16:01:00+00:00"
+    }
+  ]
+}
+```
+
+### `GET /custom_styles/<id>/image`
+
+Owner-only bytes. Invalid UUID or foreign id: `404` `not_found`.
+
+### `DELETE /custom_styles/<id>`
+
+```json
+{"ok": true}
+```
+
+### `GET /data/temp-styles/<filename>`
+
+Disabled. Returns `404`.
+
+## Predict
+
+### `POST /predict`
+
+Starts GPU work. Response `text/event-stream`. Quota reserved **before** GPU. Default predict rate: 10 / user / hour.
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|--------|
+| `content_img_name` | string | yes | | Filename from `upload_content` (or a curated content file). |
+| `style_img_name` | string | yes | | Catalog `file`, or `custom_<uuid>.<ext>`. `temp_*` still copies from `/data/temp-styles/` if present. |
+| `person_preserve` | boolean or string | no | true | Any value whose string form is not `false` (case-insensitive) keeps preservation on. |
+
+JSON or form fields are accepted.
+
+SSE events (each line is `data: <json>\n\n`):
+
+| Payload | When |
+|---------|------|
+| `{ "log": "Starting neural style transfer..." }` | First event |
+| `{ "progress": 0–100, "status": "processing", "log": "..." }` | Optimizer iteration lines |
+| `{ "log": "..." }` | Other GPU log lines |
+| `{ "progress": 100, "status": "done", "url", "generation_id", "dir_name", ... }` | Success |
+| `{ "error": "<message>" }` | Failure after the stream starts |
+
+Done payload extra keys, when present: `url_blend`, `url_grade`, `url_blend_grade`, `url_content`, `person_detected`, `person_bbox`, `image_hw`.
+
+`dir_name` is `All_<first 8 hex digits of the user UUID with dashes stripped>_<content stem>_<style stem>`. The JPEG name is a 4-digit zero-padded frame id (for example `0600.jpg`) plus sidecars `_blend`, `_grade`, `_content` as written.
+
+`url` is the fully preserved JPEG (subject blend strength 0). `url_blend` is the max-blend layer (~15% style on the person). The browser mixes them. There is no server `subject_blend_strength`.
+
+Video export is off (`generate_video: false`).
+
+### `GET` / `PUT` / `PATCH` / `DELETE /predict`
+
+```json
+{
+  "error": "method_not_allowed",
+  "message": "Use POST /predict with Authorization: Bearer <access_token>."
+}
+```
+
+Status `405`.
+
+Walkthrough: [Generate via HTTP](/guides/generate-via-http).
+
+## Outputs and crop
+
+### `GET /data/output-images/<path>`
+
+Bearer + ownership. Clients should `authFetch` and use a blob URL, not a raw `<img src>`.
+
+### `POST /crop/<generation_id>/<ratio_key>`
+
+`generation_id` is a UUID. `ratio_key`: `square_1_1`, `portrait_4_5`, `story_9_16`, `wallpaper_16_9`.
+
+```json
+{
+  "generation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "ratio_key": "square_1_1",
+  "ratio_label": "1:1",
+  "person_bbox": [120, 40, 510, 720],
+  "url": "/data/output-images/.../0600_crop_square_1_1.jpg",
+  "url_blend": "/data/output-images/.../0600_blend_crop_square_1_1.jpg"
+}
+```
+
+## Account, history, favorites
+
+### `GET /me`
+
+```json
+{
+  "user_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "email": "ada@example.com",
+  "display_name": null,
+  "member_since": "2026-08-01T12:00:00+00:00",
+  "plan_tier": "free",
+  "is_paid": false,
+  "billing_gateway": null
+}
+```
+
+No avatar field exists in the schema.
+
+### `GET /me/quota`
+
+Display-only. Enforcement is on `POST /predict`. Same keys for every account (no exempt flags).
+
+```json
+{
+  "used": 2,
+  "limit": 5,
+  "remaining": 3,
+  "anchor_at": "2026-08-13T10:00:00+00:00",
+  "period_start": "2026-09-13T10:00:00+00:00",
+  "reset_at": "2026-10-13T10:00:00+00:00",
+  "plan_tier": "free",
+  "is_paid": false,
+  "upgrade_required": true,
+  "billing_gateway": null
+}
+```
+
+Window: anniversary month from first generation (`quota_anchor_at`).
+
+### `GET /history`
+
+| Query | Type | Default | Constraints |
+|-------|------|---------|-------------|
+| `limit` | int | 20 | 1–100 |
+| `offset` | int | 0 | 0–10000 |
+| `include_incomplete` | bool | false | `1` / `true` / `yes` include non-complete rows |
+
+```json
+{
+  "items": [
+    {
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "output_image_path": "All_a1b2c3d4_content_a1b2c3d4_photo_vg_starry_night/0600.jpg",
+      "image_url": "/data/output-images/All_a1b2c3d4_content_a1b2c3d4_photo_vg_starry_night/0600.jpg",
+      "style": "vg_starry_night",
+      "style_image_path": "vg_starry_night.jpg",
+      "content_image_path": "content_a1b2c3d4_photo.jpg",
+      "created_at": "2026-09-13T16:20:00+00:00",
+      "status": "complete",
+      "is_favorited": false,
+      "person_detected": true,
+      "person_bbox": [120, 40, 510, 720],
+      "image_hw": [768, 1024]
+    }
+  ],
+  "limit": 20,
+  "offset": 0,
+  "total": 1,
+  "has_more": false
+}
+```
+
+Optional item keys: `url_blend`, `url_grade`, `url_blend_grade`, `url_content`.
+
+### `GET /favorites`
+
+```json
+{
+  "items": [],
+  "total": 0
+}
+```
+
+Items are the same generation shape plus `favorited_at`. Order: most recently favorited first.
+
+### `POST /favorites`
+
+Body: `{ "generation_id": "<uuid>" }`. You can only favorite your own generation.
+
+First insert: `201` `{ "favorited": true, "created": true, "generation_id": "...", "favorite": { ... } }`. Duplicate: `200` `{ "favorited": true, "created": false, "generation_id": "..." }`.
+
+### `DELETE /favorites/<generation_id>`
+
+Idempotent. Missing favorite still `200`: `{ "favorited": false, "generation_id": "..." }`.
+
+## Billing
+
+### `GET /billing/status`
+
+Plan catalog, entitlement, quota snapshot. Extra key `gateway_locked` is true after first paid checkout. If quota RPC fails, `quota_error` is `quota_unavailable` and quota fields are still present with zeros/limit.
+
+### `POST /billing/checkout`
+
+Body: `{ "plan": "pro" | "max" }`.
+
+Dodo: `{ "gateway": "dodo", "url": "https://..." }`. Razorpay: `{ "gateway": "razorpay", "key_id": "rzp_...", "subscription_id": "sub_...", "plan": "pro" }`. In-place upgrade: `{ "gateway": "...", "upgraded": true, "plan": "max" }`.
+
+### `POST /billing/portal`
+
+Dodo Customer Portal URL: `{ "url": "https://..." }`. Razorpay users: `409` `razorpay_use_cancel`.
+
+### `POST /billing/cancel`
+
+Razorpay cancel-at-period-end. Dodo: `409` `use_portal`.
+
+### `POST /billing/sync`
+
+Body: `{ "subscription_id": "sub_..." }` (must start with `sub_`, max 200 chars). Dodo delayed webhook recovery.
+
+### `POST /billing/razorpay/confirm`
+
+Body:
+
+| Field | Required | Format |
+|-------|----------|--------|
+| `razorpay_payment_id` | yes | starts with `pay_` |
+| `razorpay_subscription_id` | yes | starts with `sub_` |
+| `razorpay_signature` | yes | max 512 chars |
+
+Success: `{ "ok": true, "plan": "pro", "is_paid": true }`.
+
+### `POST /billing/webhooks/dodo`
+
+No user JWT. Verified with `DODO_PAYMENTS_WEBHOOK_KEY` (Standard Webhooks). `{ "ok": true }`.
+
+### `POST /billing/webhooks/razorpay`
+
+No user JWT. Verified with `RAZORPAY_WEBHOOK_SECRET`. `{ "ok": true }`.
+
+Task-oriented billing: [Manage billing](/guides/manage-billing).

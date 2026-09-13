@@ -1,0 +1,108 @@
+---
+title: "Manage billing"
+description: "Upgrade, downgrade, cancel, and recover checkout for Pro and Max."
+---
+
+Plans are monthly generation counts, not a credit ledger. Display prices in the pricing modal default to **$1.99 / $5.99** (Dodo) and **₹59 / ₹149** (Razorpay). Those strings are display-only; the processor charges the Dashboard product.
+
+| Plan | Generations / month |
+|------|---------------------|
+| Free | 5 |
+| Pro | 50 |
+| Max | 150 |
+
+Why India vs rest-of-world uses different processors: [Auth and billing](/concepts/auth-and-billing).
+
+## Upgrade in the studio
+
+1. Open the profile menu → **Upgrade**, or **Upgrade** in Settings.
+2. Choose **Pro** or **Max**.
+3. Complete Checkout (Razorpay.js in India, Dodo Checkout elsewhere).
+4. On return, wait until Settings shows the new plan. The studio polls `GET /billing/status` and, for Dodo, can call `POST /billing/sync`.
+
+Success: `plan_tier` is `pro` or `max`, `is_paid` is true, and remaining quota matches the new limit.
+
+Razorpay plans are granted only after a **captured** payment. Creating a subscription is not enough.
+
+## Upgrade via HTTP
+
+```bash
+curl -sS https://artfloe.fun/billing/checkout \
+  -H 'Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  -H 'Content-Type: application/json' \
+  -H 'Sec-Fetch-Site: none' \
+  -d '{"plan":"pro"}'
+```
+
+Dodo response:
+
+```json
+{
+  "gateway": "dodo",
+  "url": "https://checkout.dodopayments.com/session/cks_..."
+}
+```
+
+Open `url` to pay. After return, if the webhook is slow:
+
+```bash
+curl -sS https://artfloe.fun/billing/sync \
+  -H 'Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  -H 'Content-Type: application/json' \
+  -H 'Sec-Fetch-Site: none' \
+  -d '{"subscription_id":"sub_..."}'
+```
+
+`subscription_id` must start with `sub_`.
+
+Razorpay response (Checkout.js payload, not a redirect URL):
+
+```json
+{
+  "gateway": "razorpay",
+  "key_id": "rzp_live_...",
+  "subscription_id": "sub_...",
+  "plan": "pro"
+}
+```
+
+After Checkout.js succeeds, the studio posts to `/billing/razorpay/confirm` with `razorpay_payment_id`, `razorpay_subscription_id`, and `razorpay_signature`. Uncaptured payments return `409` `payment_incomplete`.
+
+Already on that plan returns `409` `already_on_plan`. Pro → Max on an active subscription that is not set to cancel applies immediately (`upgraded: true`).
+
+## Downgrade
+
+Downgrades keep the higher quota until `current_period_end`. `POST /billing/checkout` with a lower plan returns `409` `downgrade_via_manage`. Use **Manage billing** instead.
+
+- **Dodo:** profile menu → **Manage billing** → `POST /billing/portal` → Customer Portal.
+- **Razorpay:** there is no portal. Cancel at cycle end from the in-app pricing UI (`POST /billing/cancel`).
+
+## Cancel
+
+**Dodo:** `POST /billing/cancel` returns `409` `use_portal`. Open the portal.
+
+**Razorpay:**
+
+```bash
+curl -sS https://artfloe.fun/billing/cancel \
+  -H 'Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9...' \
+  -H 'Sec-Fetch-Site: none'
+```
+
+Expected response:
+
+```json
+{
+  "ok": true,
+  "cancel_at_period_end": true,
+  "current_period_end": "2026-10-13T12:00:00+00:00"
+}
+```
+
+A scheduled cancel **blocks further upgrades** until the period ends (`cancel_pending`).
+
+## Policy the UI implements
+
+- Failed renewal (`past_due`) keeps paid quota until `current_period_end`, then Free.
+- First successful paid checkout locks `profiles.billing_gateway`. Travel or VPN does not switch processors.
+- Quota is reserved in Postgres before GPU. Prep failure after reserve cancels the slot; a disconnect after the GPU starts still consumes quota.
